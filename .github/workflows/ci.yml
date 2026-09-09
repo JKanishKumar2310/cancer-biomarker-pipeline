@@ -1,0 +1,42 @@
+name: CI Pipeline & Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile all Python files
+        run: |
+          python -m compileall -q config.py run_analysis.py run_dashboard.py src dashboard
+
+      - name: Run End-to-End Pipeline Smoke Test
+        run: |
+          python run_analysis.py --test-mode
+
+      - name: Verify Dashboard Initialization
+        run: |
+          python -c "from dashboard.app import create_app; app = create_app(); print('Dashboard initialized successfully in CI!')"

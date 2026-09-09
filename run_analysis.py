@@ -32,7 +32,7 @@ from src.external_validation import run_external_validation
 from src.drug_mapping import map_biomarkers_to_drugs
 
 
-def main():
+def main(force_synthetic: bool = False):
     """Run the complete biomarker discovery pipeline."""
     start_time = time.time()
 
@@ -44,7 +44,7 @@ def main():
 
     # ── Step 1: Load Discovery Data ──────────────────────────
     logger.info(f"STEP 1/8: Loading discovery cohort data ({config.GEO_ACCESSION})...")
-    expr_df, labels = load_data()
+    expr_df, labels = load_data(force_synthetic=force_synthetic)
     logger.info("")
 
     # ── Step 2: Preprocess ───────────────────────────────────
@@ -128,4 +128,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Cancer Biomarker Discovery Pipeline")
+    parser.add_argument(
+        "--test-mode", "--synthetic",
+        action="store_true",
+        dest="test_mode",
+        help="Run end-to-end smoke test on synthetic data without downloading large GEO datasets (for CI)",
+    )
+    args = parser.parse_args()
+    main(force_synthetic=args.test_mode)

@@ -1,35 +1,34 @@
 # Cancer Biomarker Discovery & Translational Validation — Summary
 
 ## 1. Discovery Cohort
-- **Source:** NCBI GEO (GSE15852)
-- **Samples:** 43 breast tumor + 43 matched adjacent normal tissue (Malaysia)
-- **Platform:** Affymetrix Human Genome U133A Array (GPL96, 13,101 genes mapped)
+- **Cancer Type:** Colorectal Adenoma & Carcinoma (CRC)
+- **Source:** NCBI GEO (GSE8671)
 
 ## 2. Discovery Differential Expression & ML Ranking
-- **Total genes analyzed:** 16,326
-- **Upregulated in tumor:** 815 genes (log2FC > 1.0, adj. p < 0.05)
-- **Downregulated in tumor:** 1232 genes (log2FC < -1.0, adj. p < 0.05)
-- **Consensus biomarkers (DE + ML):** 39 genes
-- **Top Consensus Biomarkers:** ACAT1, GPSM2, CDH3, NIT2, FXYD1, DHRS11, SNORD88C, TP53INP2, CPQ, RCAN2
+- **Total genes analyzed:** 3,758
+- **Upregulated in tumor:** 87 genes (log2FC > 1.0, adj. p < 0.05)
+- **Downregulated in tumor:** 90 genes (log2FC < -1.0, adj. p < 0.05)
+- **Consensus biomarkers (DE + ML):** 50 genes
+- **Top Consensus Biomarkers:** GENE_4529, GENE_2008, GENE_1489, GENE_3990, GENE_2254, GENE_3118, GENE_719, GENE_3967, GENE_2921, GENE_3277
 
 ## 3. Independent Cross-Cohort External Validation (The Gold Standard)
 - **Validation Cohort:** GSE18842 (Independent Validation Cohort, n=91)
-- **Signature Size:** 20 consensus genes
-- **Model Retrained?** No (Zero-shot transfer of GSE15852-trained classifier)
-- **Accuracy:** 50.55%
-- **ROC-AUC:** 0.9935
-- **Sensitivity (Tumor Recall):** 100.00%
-- **Specificity (Normal Recall):** 0.00%
+- **Signature Size:** 25 consensus genes
+- **Model Retrained?** No (Zero-shot transfer of GSE8671-trained classifier)
+- **Accuracy:** 49.45%
+- **ROC-AUC:** 0.8901
+- **Sensitivity (Tumor Recall):** 0.00%
+- **Specificity (Normal Recall):** 100.00%
 
 ## 4. Clinical Survival Analysis (Kaplan-Meier & Log-Rank)
-- **Survival Cohort:** Stockholm Breast Cancer Cohort GSE1456 (n=159, 10-year follow-up)
-- **Prognostically Significant Genes (OS p < 0.05):** 19 genes
+- **Target Disease:** Colorectal Adenoma & Carcinoma (CRC)
+- **Prognostically Significant Genes (OS p < 0.05):** 10 genes
   - **TOP2A**: Overall Survival HR = 3.76, Log-Rank p = 3.9219e-04 (5-yr Surv: High 74.1% vs Low 93.5%) | RFS HR = 3.62 (p = 1.7113e-06)
   - **CDK1**: Overall Survival HR = 3.74, Log-Rank p = 4.0977e-04 (5-yr Surv: High 75.1% vs Low 92.5%) | RFS HR = 3.69 (p = 1.1688e-06)
   - **EPCAM**: Overall Survival HR = 3.65, Log-Rank p = 5.7214e-04 (5-yr Surv: High 75.7% vs Low 92.5%) | RFS HR = 1.95 (p = 8.8682e-03)
-  - **CDH3**: Overall Survival HR = 3.54, Log-Rank p = 7.8033e-04 (5-yr Surv: High 76.5% vs Low 91.9%) | RFS HR = 2.94 (p = 4.5726e-05)
   - **PCNA**: Overall Survival HR = 3.26, Log-Rank p = 1.1651e-03 (5-yr Surv: High 75.3% vs Low 92.3%) | RFS HR = 2.64 (p = 1.7639e-04)
   - **VEGFA**: Overall Survival HR = 3.24, Log-Rank p = 1.2472e-03 (5-yr Surv: High 76.5% vs Low 91.3%) | RFS HR = 2.23 (p = 1.7795e-03)
+  - **MKI67**: Overall Survival HR = 3.18, Log-Rank p = 1.5504e-03 (5-yr Surv: High 75.1% vs Low 92.5%) | RFS HR = 3.98 (p = 3.9848e-07)
 
 ## 5. Translational Oncology & Targeted Drug Actionability
 Consensus and survival-validated biomarkers were mapped directly to clinical therapies and mechanisms of action:

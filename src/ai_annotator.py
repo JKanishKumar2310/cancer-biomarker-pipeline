@@ -60,14 +60,15 @@ def annotate_gene(gene_name: str, context: dict, api_key: str, model: str = None
     log2fc = context.get("log2FC", 0)
     pval = context.get("adj_pvalue", 1)
 
-    prompt = f"""You are a cancer biology expert. Provide a brief (2-3 sentence) annotation for the gene {gene_name} in the context of breast cancer.
+    cancer_desc = getattr(config, "CANCER_TYPE", "oncology")
+    prompt = f"""You are a cancer biology expert. Provide a brief (2-3 sentence) annotation for the gene {gene_name} in the context of {cancer_desc}.
 
 Gene: {gene_name}
 Regulation in tumor: {regulation} (log2FC = {log2fc:.2f}, adjusted p-value = {pval:.2e})
 
 Include:
 1. What protein this gene encodes and its main function
-2. Its known role in breast cancer (if any)
+2. Its known role in {cancer_desc} (if any)
 3. Whether the observed regulation direction (up/down) is consistent with published literature
 
 Be precise and cite only well-established facts. If you are uncertain, say so explicitly.
@@ -264,7 +265,7 @@ def generate_summary_report(
             ext_val_summary = (
                 f"- **Validation Cohort:** {cohort_name}\n"
                 f"- **Signature Size:** {n_sig} consensus genes\n"
-                f"- **Model Retrained?** No (Zero-shot transfer of GSE15852-trained classifier)\n"
+                f"- **Model Retrained?** No (Zero-shot transfer of {config.GEO_ACCESSION}-trained classifier)\n"
                 f"- **Accuracy:** {acc:.2f}%\n"
                 f"- **ROC-AUC:** {auc:.4f}\n"
                 f"- **Sensitivity (Tumor Recall):** {sens:.2f}%\n"
@@ -286,7 +287,7 @@ def generate_summary_report(
                     f"RFS HR = {r['rfs_hazard_ratio']:.2f} (p = {r['rfs_pvalue']:.4e})"
                 )
             surv_summary = (
-                f"- **Survival Cohort:** Stockholm Breast Cancer Cohort GSE1456 (n=159, 10-year follow-up)\n"
+                f"- **Target Disease:** {config.CANCER_TYPE}\n"
                 f"- **Prognostically Significant Genes (OS p < 0.05):** {len(sig_surv)} genes\n"
                 + "\n".join(top_surv_lines)
             )
@@ -296,9 +297,8 @@ def generate_summary_report(
     summary = f"""# Cancer Biomarker Discovery & Translational Validation — Summary
 
 ## 1. Discovery Cohort
-- **Source:** NCBI GEO (GSE15852)
-- **Samples:** 43 breast tumor + 43 matched adjacent normal tissue (Malaysia)
-- **Platform:** Affymetrix Human Genome U133A Array (GPL96, 13,101 genes mapped)
+- **Cancer Type:** {config.CANCER_TYPE}
+- **Source:** NCBI GEO ({config.GEO_ACCESSION})
 
 ## 2. Discovery Differential Expression & ML Ranking
 - **Total genes analyzed:** {n_total:,}
