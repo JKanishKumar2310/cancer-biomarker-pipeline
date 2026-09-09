@@ -1,0 +1,21 @@
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Large NCBI GEO datasets & platform annotations (downloaded automatically on demand)
+data/*
+!data/.gitkeep
+
+# Temporary scratch scripts & logs
+scratch/
+*.log
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

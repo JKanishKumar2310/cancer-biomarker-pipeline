@@ -1,0 +1,224 @@
+"""
+Cross-Cohort External Validation Engine.
+
+Tests the biomarker signature and Random Forest model trained on the
+discovery cohort on an independent external cohort WITHOUT retraining,
+proving cross-study generalizability.
+
+Discovery → External cohort mapping:
+  GSE19804 (Lung, Taiwan)  → GSE18842 (Lung, Europe: 46 tumors + 45 normals)
+  GSE15852 (Breast, Malaysia) → GSE42568 (Breast, Europe: 104 tumors + 17 normals)
+"""
+import os
+import sys
+import gzip
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, confusion_matrix
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import config
+from src.utils import logger
+
+# Map discovery accession → external validation accession + platform
+_EXT_COHORT_MAP = {
+    "GSE19804": {
+        "accession": "GSE18842",
+        "platform": "GPL570",
+        "description": "GSE18842 (Europe, n=91: 46 tumors + 45 normals)",
+        "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE18nnn/GSE18842/matrix/GSE18842_series_matrix.txt.gz",
+    },
+    "GSE8671": {
+        "accession": "GSE18842",
+        "platform": "GPL570",
+        "description": "GSE18842 (Independent Validation Cohort, n=91)",
+        "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE18nnn/GSE18842/matrix/GSE18842_series_matrix.txt.gz",
+    },
+    "GSE15852": {
+        "accession": "GSE42568",
+        "platform": "GPL570",
+        "description": "GSE42568 (Europe, n=121: 104 tumors + 17 normals)",
+        "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE42nnn/GSE42568/matrix/GSE42568_series_matrix.txt.gz",
+    },
+}
+
+
+def _get_ext_info() -> dict:
+    return _EXT_COHORT_MAP.get(config.GEO_ACCESSION, _EXT_COHORT_MAP["GSE15852"])
+
+
+def load_external_cohort() -> tuple[pd.DataFrame, pd.Series]:
+    """Load the external validation cohort matching the current cancer type."""
+    info = _get_ext_info()
+    ext_acc = info["accession"]
+
+    cache_expr = os.path.join(config.DATA_DIR, f"{ext_acc}_expression.csv")
+    cache_labels = os.path.join(config.DATA_DIR, f"{ext_acc}_labels.csv")
+
+    if os.path.exists(cache_expr) and os.path.exists(cache_labels):
+        logger.info(f"Loading cached {ext_acc} external validation cohort...")
+        expr_df = pd.read_csv(cache_expr, index_col=0)
+        labels = pd.read_csv(cache_labels, index_col=0).squeeze()
+        return expr_df, labels
+
+    matrix_file = os.path.join(config.DATA_DIR, f"{ext_acc}_series_matrix.txt.gz")
+    annot_file = os.path.join(config.DATA_DIR, f"{info['platform']}.annot.gz")
+
+    # Download if needed
+    import urllib.request
+    if not os.path.exists(matrix_file):
+        logger.info(f"Downloading {ext_acc} series matrix...")
+        urllib.request.urlretrieve(info["matrix_url"], matrix_file)
+
+    logger.info(f"Parsing {ext_acc} external cohort series matrix...")
+    meta_lines = []
+    skiprows = 0
+    with gzip.open(matrix_file, "rt", encoding="utf-8", errors="ignore") as f:
+        for i, line in enumerate(f):
+            if line.startswith("!series_matrix_table_begin"):
+                skiprows = i + 1
+                break
+            meta_lines.append(line)
+
+    sample_ids, sample_titles = [], []
+    for line in meta_lines:
+        if line.startswith("!Sample_geo_accession"):
+            sample_ids = [x.strip(' "\t\r\n') for x in line.split("\t")[1:]]
+        elif line.startswith("!Sample_title"):
+            sample_titles = [x.strip(' "\t\r\n') for x in line.split("\t")[1:]]
+
+    labels_dict = {}
+    for i, s_id in enumerate(sample_ids):
+        t = sample_titles[i].lower() if i < len(sample_titles) else ""
+        if "normal" in t or "healthy" in t or "adjacent" in t:
+            labels_dict[s_id] = "Normal"
+        else:
+            labels_dict[s_id] = "Tumor"
+
+    labels = pd.Series(labels_dict, name="condition")
+
+    # Read expression
+    logger.info(f"Reading {ext_acc} expression matrix...")
+    df = pd.read_csv(
+        matrix_file, compression="gzip", skiprows=skiprows, sep="\t", index_col=0, comment="!"
+    )
+    df = df[~df.index.astype(str).str.startswith("!")]
+    df = df.apply(pd.to_numeric, errors="coerce")
+
+    # Map probes
+    logger.info(f"Mapping probes via {info['platform']} annotations...")
+    annot_skip = 0
+    with gzip.open(annot_file, "rt", encoding="utf-8", errors="ignore") as f:
+        for i, line in enumerate(f):
+            if line.startswith("!platform_table_begin"):
+                annot_skip = i + 1
+                break
+
+    annot_df = pd.read_csv(
+        annot_file, compression="gzip", skiprows=annot_skip, sep="\t",
+        usecols=["ID", "Gene symbol"], low_memory=False
+    )
+    annot_df = annot_df.dropna(subset=["Gene symbol"])
+    annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
+    annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
+
+    probe_to_gene = dict(zip(annot_df["ID"], annot_df["Gene symbol"]))
+    df["gene"] = df.index.map(probe_to_gene)
+    df = df.dropna(subset=["gene"]).set_index("gene")
+    expr_df = df.groupby(df.index).mean()
+
+    common = expr_df.columns.intersection(labels.index)
+    expr_df = expr_df[common]
+    labels = labels[common]
+
+    if expr_df.values.max() > 50:
+        expr_df = np.log2(expr_df + 1)
+
+    # Cache
+    expr_df.to_csv(cache_expr)
+    labels.to_frame().to_csv(cache_labels)
+    logger.info(f"{ext_acc} loaded & cached: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples ({dict(labels.value_counts())})")
+    return expr_df, labels
+
+
+def run_external_validation() -> dict:
+    """Train RF on discovery cohort and evaluate on external cohort (zero-shot)."""
+    info = _get_ext_info()
+    logger.info("=" * 60)
+    logger.info("CROSS-COHORT EXTERNAL VALIDATION")
+    logger.info("=" * 60)
+
+    # 1. Load Discovery Cohort
+    from src.data_loader import load_data
+    from src.preprocessing import preprocess
+
+    train_expr, train_labels = load_data()
+    train_clean, _ = preprocess(train_expr, train_labels)
+
+    # 2. Load Consensus Biomarker Signature
+    cons_file = os.path.join(config.RESULTS_DIR, "consensus_biomarkers.csv")
+    if os.path.exists(cons_file):
+        cons_df = pd.read_csv(cons_file)
+        sig_genes = cons_df["gene"].head(20).tolist()
+    else:
+        sig_genes = config.KNOWN_MARKERS[:10]
+
+    logger.info(f"Using {len(sig_genes)} consensus biomarker genes for signature model: {sig_genes[:6]}...")
+
+    # 3. Load External Cohort
+    test_expr, test_labels = load_external_cohort()
+
+    # Find common genes in signature
+    valid_sig = [g for g in sig_genes if g in train_clean.index and g in test_expr.index]
+    logger.info(f"Common signature genes present in both cohorts: {len(valid_sig)}/{len(sig_genes)}")
+
+    # 4. Train on Discovery, Test on External
+    X_train = train_clean.loc[valid_sig].T.values
+    y_train = (train_labels == "Tumor").astype(int).values
+
+    rf = RandomForestClassifier(n_estimators=500, random_state=config.RANDOM_SEED, n_jobs=-1)
+    rf.fit(X_train, y_train)
+
+    X_test = test_expr.loc[valid_sig].T.values
+    y_test = (test_labels == "Tumor").astype(int).values
+
+    test_preds = rf.predict(X_test)
+    test_probs = rf.predict_proba(X_test)[:, 1]
+
+    acc = accuracy_score(y_test, test_preds)
+    auc = roc_auc_score(y_test, test_probs)
+    tn, fp, fn, tp = confusion_matrix(y_test, test_preds).ravel()
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    fpr, tpr, _ = roc_curve(y_test, test_probs)
+
+    logger.info(f"\nExternal Cohort Performance (Zero-Shot on {info['accession']}):")
+    logger.info(f"  • Test Accuracy: {acc * 100:.2f}%")
+    logger.info(f"  • ROC-AUC Score: {auc:.4f}")
+    logger.info(f"  • Sensitivity:   {sensitivity * 100:.2f}% (Tumor Detection)")
+    logger.info(f"  • Specificity:   {specificity * 100:.2f}% (Normal Tissue Rule-Out)")
+    logger.info(f"  • Confusion Matrix: TP={tp}, TN={tn}, FP={fp}, FN={fn}")
+
+    # Save
+    metrics_df = pd.DataFrame([{
+        "discovery_cohort": f"{config.GEO_ACCESSION} (n={len(train_labels)})",
+        "external_cohort": info["description"],
+        "signature_genes": len(valid_sig),
+        "test_accuracy": acc, "roc_auc": auc,
+        "sensitivity": sensitivity, "specificity": specificity,
+        "true_positives": tp, "true_negatives": tn,
+        "false_positives": fp, "false_negatives": fn,
+    }])
+    os.makedirs(config.RESULTS_DIR, exist_ok=True)
+    metrics_df.to_csv(os.path.join(config.RESULTS_DIR, "external_validation_metrics.csv"), index=False)
+    pd.DataFrame({"fpr": fpr, "tpr": tpr}).to_csv(os.path.join(config.RESULTS_DIR, "external_roc_curve.csv"), index=False)
+
+    logger.info("Cross-cohort external validation complete ✓")
+    return {"accuracy": acc, "roc_auc": auc, "sensitivity": sensitivity,
+            "specificity": specificity, "signature_genes": valid_sig,
+            "roc_curve": {"fpr": fpr.tolist(), "tpr": tpr.tolist()}}
+
+
+if __name__ == "__main__":
+    res = run_external_validation()

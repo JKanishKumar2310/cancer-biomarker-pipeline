@@ -1,0 +1,2 @@
+discovery_cohort,external_cohort,signature_genes,test_accuracy,roc_auc,sensitivity,specificity,true_positives,true_negatives,false_positives,false_negatives
+GSE8671 (n=64),"GSE18842 (Independent Validation Cohort, n=91)",20,0.5054945054945055,0.9934782608695653,1.0,0.0,46,0,45,0
