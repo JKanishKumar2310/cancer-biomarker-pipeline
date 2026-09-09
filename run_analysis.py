@@ -78,13 +78,13 @@ def main(force_synthetic: bool = False):
     # ── Step 6: Clinical Survival Analysis ───────────────────
     surv_label = "GSE31210, n=226" if config.GEO_ACCESSION in ["GSE19804", "GSE8671"] else "GSE1456, n=159"
     logger.info(f"STEP 6/8: Clinical survival analysis ({surv_label})...")
-    survival_df = run_survival_pipeline()
+    survival_df = run_survival_pipeline(force_synthetic=force_synthetic)
     logger.info("")
 
     # ── Step 7: Cross-Cohort External Validation ─────────────
     ext_label = "GSE18842, n=91" if config.GEO_ACCESSION in ["GSE19804", "GSE8671"] else "GSE42568, n=121"
     logger.info(f"STEP 7/8: Cross-cohort external validation ({ext_label})...")
-    ext_val = run_external_validation()
+    ext_val = run_external_validation(force_synthetic=force_synthetic)
     logger.info("")
 
     # ── Step 8: Drug Mapping & AI Annotation ─────────────────

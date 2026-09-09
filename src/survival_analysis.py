@@ -20,7 +20,7 @@ def _create_synthetic_survival_cohort() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Create a minimal synthetic survival cohort for CI or offline environments."""
     np.random.seed(config.RANDOM_SEED)
     samples = [f"Patient_{i+1:03d}" for i in range(60)]
-    genes = config.KNOWN_MARKERS + ["CLIC5", "TNNC1", "TOP2A", "CDK1", "EPCAM"]
+    genes = list(dict.fromkeys(config.KNOWN_MARKERS + ["CLIC5", "TNNC1", "TOP2A", "CDK1", "EPCAM", "CDH3", "FXYD1", "DHRS11"]))
     expr = pd.DataFrame(np.random.normal(7.0, 1.5, size=(len(genes), len(samples))), index=genes, columns=samples)
     clin = pd.DataFrame({
         "SURV_DEATH": np.random.uniform(0.5, 10.0, size=len(samples)),
@@ -31,11 +31,15 @@ def _create_synthetic_survival_cohort() -> tuple[pd.DataFrame, pd.DataFrame]:
     return expr, clin
 
 
-def load_survival_cohort() -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_survival_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Load clinical survival cohort matching current cancer type.
     GSE31210 for Lung Cancer (n=226), GSE1456 for Breast Cancer (n=159).
     """
+    if force_synthetic:
+        logger.info("Using synthetic survival cohort (test mode)...")
+        return _create_synthetic_survival_cohort()
+
     if getattr(config, "GEO_ACCESSION", "") in ["GSE19804", "GSE8671"]:
         expr_cache = os.path.join(config.DATA_DIR, "GSE31210_expression.csv")
         clin_cache = os.path.join(config.DATA_DIR, "GSE31210_clinical.csv")
@@ -294,12 +298,16 @@ def evaluate_biomarker_survival(
     valid_mask = clinical_df[time_col].notna() & clinical_df[event_col].notna()
     samples = clinical_df[valid_mask].index.intersection(expr_df.columns)
 
-    durations = clinical_df.loc[samples, time_col].values
-    events = clinical_df.loc[samples, event_col].values
-    gene_expr = expr_df.loc[gene, samples].values
+    durations = np.asarray(clinical_df.loc[samples, time_col]).flatten().astype(float)
+    events = np.asarray(clinical_df.loc[samples, event_col]).flatten().astype(int)
+
+    val = expr_df.loc[gene, samples]
+    if isinstance(val, pd.DataFrame):
+        val = val.iloc[0]
+    gene_expr = np.asarray(val).flatten().astype(float)
 
     # Median cutoff for stratification
-    median_val = np.median(gene_expr)
+    median_val = float(np.median(gene_expr))
     high_mask = gene_expr >= median_val
     low_mask = ~high_mask
 
@@ -336,7 +344,7 @@ def evaluate_biomarker_survival(
     }
 
 
-def run_survival_pipeline() -> pd.DataFrame:
+def run_survival_pipeline(force_synthetic: bool = False) -> pd.DataFrame:
     """
     Run survival analysis across all top consensus biomarkers and save results.
     """
@@ -345,7 +353,7 @@ def run_survival_pipeline() -> pd.DataFrame:
     logger.info(f"CLINICAL SURVIVAL VALIDATION ({cohort_label} Cohort)")
     logger.info("=" * 60)
 
-    expr_df, clinical_df = load_survival_cohort()
+    expr_df, clinical_df = load_survival_cohort(force_synthetic=force_synthetic)
 
     # Load consensus biomarkers
     consensus_path = os.path.join(config.RESULTS_DIR, "consensus_biomarkers.csv")
