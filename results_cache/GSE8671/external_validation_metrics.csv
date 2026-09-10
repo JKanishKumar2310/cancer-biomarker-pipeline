@@ -1,2 +1,2 @@
-discovery_cohort,external_cohort,signature_genes,test_accuracy,roc_auc,sensitivity,specificity,true_positives,true_negatives,false_positives,false_negatives
-GSE8671 (n=64),"GSE39582 (Colorectal Adenoma & Carcinoma, n=50)",20,0.8681318681318682,0.9236714975845411,0.9565217391304348,0.7777777777777778,44,35,10,2
+discovery_cohort,external_cohort,cancer_type,disease_matched,n_train_samples,n_test_samples,signature_genes_tested,signature_gene_list,test_accuracy,roc_auc,sensitivity,specificity,true_positives,true_negatives,false_positives,false_negatives,data_provenance
+GSE8671 (n=64),"GSE20916 (Colorectal Cohort, n=145: 101 adenomas/carcinomas + 44 normal mucosa)",Colorectal Adenoma & Carcinoma (CRC),True,64,145,20,CEMIP;AQP8;PYY;PLP1;CHGA;FOXQ1;SCNN1B;AXIN2;TEAD4;CDKN2B;EDN3;SLC4A4;ADAMDEC1;TACSTD2;ABCA8;KLK11;BCHE;SPIB;DHRS11;TBX3,0.7793103448275862,0.9956120612061207,1.0,0.2727272727272727,101,12,32,0,Authentic NCBI GEO Cross-Cohort Transfer (Zero Retraining)

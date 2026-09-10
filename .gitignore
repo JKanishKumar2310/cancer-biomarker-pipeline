@@ -12,7 +12,9 @@ data/*
 
 # Temporary scratch scripts & logs
 scratch/
-*.log
+# Synthetic test outputs
+results/synthetic_test/*
+!results/synthetic_test/.gitkeep
 
 # IDE & OS files
 .vscode/

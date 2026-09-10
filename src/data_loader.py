@@ -6,6 +6,7 @@ Supports multiple GEO accessions configured in config.py:
   - GSE19804: Lung adenocarcinoma (60 tumor + 60 normal, GPL570)
 """
 import os
+import re
 import gzip
 import urllib.request
 import pandas as pd
@@ -15,6 +16,36 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
 from src.utils import logger
+
+
+def extract_patient_id(title: str, sample_id: str) -> str:
+    """
+    Extract or infer patient identifier from sample titles/metadata.
+    Supports common GEO naming conventions:
+      - 'Biopsy of the normal mucosa ... from patient #1' -> 'Patient_001'
+      - 'Lung Cancer 2T' / 'Lung Normal 2N' -> 'Patient_002'
+      - 'Normal BC0043N' / 'Cancer BC0043T' -> 'Patient_043'
+    """
+    if not isinstance(title, str):
+        return sample_id
+
+    # Pattern 1: patient #1, patient 1
+    m1 = re.search(r'patient\s*#?\s*(\d+)', title, re.IGNORECASE)
+    if m1:
+        return f"Patient_{int(m1.group(1)):03d}"
+
+    # Pattern 2: 2T / 2N or Lung Cancer 2T
+    m2 = re.search(r'(\d+)[TN]\b', title, re.IGNORECASE)
+    if m2:
+        return f"Patient_{int(m2.group(1)):03d}"
+
+    # Pattern 3: BC0043N / BC0043T
+    m3 = re.search(r'(BC\d+)', title, re.IGNORECASE)
+    if m3:
+        digits = re.search(r'\d+', m3.group(1))
+        return f"Patient_{int(digits.group(0)):03d}" if digits else m3.group(1).upper()
+
+    return sample_id
 
 
 # ── Platform annotation map ─────────────────────────────────
@@ -197,15 +228,32 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
     if df_genes.values.max() > 50:
         df_genes = np.log2(df_genes + 1)
 
-    logger.info(f"Parsed real GEO dataset: {df_genes.shape[0]} unique genes × {df_genes.shape[1]} samples")
+    patient_map = {}
+    for s_id, title in zip(sample_ids, sample_titles):
+        patient_map[s_id] = extract_patient_id(title, s_id)
+
+    patient_ids = pd.Series([patient_map.get(s, s) for s in label_series.index], index=label_series.index, name="patient_id")
+    label_series.attrs["patient_id"] = patient_ids
+
+    logger.info(f"Parsed real GEO dataset: {df_genes.shape[0]} unique genes × {df_genes.shape[1]} samples across {patient_ids.nunique()} patients")
     return df_genes, label_series
+
+
+def _save_labels(labels: pd.Series, filepath: str):
+    """Save labels and patient IDs to CSV."""
+    patient_ids = labels.attrs.get("patient_id")
+    if patient_ids is not None:
+        df = pd.DataFrame({"condition": labels, "patient_id": patient_ids}, index=labels.index)
+    else:
+        df = pd.DataFrame({"condition": labels, "patient_id": labels.index}, index=labels.index)
+    df.to_csv(filepath)
 
 
 def _create_synthetic_dataset() -> tuple[pd.DataFrame, pd.Series]:
     """
-    Create a realistic synthetic expression dataset when GEO is unavailable.
+    Create a realistic synthetic expression dataset when explicitly requested (test mode).
     """
-    logger.warning("Creating synthetic dataset for demonstration (GEO unavailable)")
+    logger.warning("Creating synthetic dataset for test mode...")
 
     np.random.seed(config.RANDOM_SEED)
 
@@ -236,24 +284,16 @@ def _create_synthetic_dataset() -> tuple[pd.DataFrame, pd.Series]:
         baseline[idx, :n_tumor] += effect + noise
 
     sample_names = [f"Tumor_{i+1}" for i in range(n_tumor)] + [f"Normal_{i+1}" for i in range(n_normal)]
+    patients = [f"Patient_{i+1:03d}" for i in range(n_tumor)] + [f"Patient_{i+1:03d}" for i in range(n_normal)]
     expr_df = pd.DataFrame(baseline, index=all_genes, columns=sample_names)
     labels = pd.Series(["Tumor"] * n_tumor + ["Normal"] * n_normal, index=sample_names, name="condition")
+    labels.attrs["patient_id"] = pd.Series(patients, index=sample_names, name="patient_id")
     return expr_df, labels
 
 
 def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
     """
-    Load expression dataset configured in config.GEO_ACCESSION.
-
-    Tries to load from cache first, then downloads from GEO.
-    Falls back to synthetic data if GEO is unavailable.
-
-    Returns
-    -------
-    expression_df : pd.DataFrame
-        Genes (rows) × Samples (columns), log2-scale expression values.
-    labels : pd.Series
-        Sample labels ('Tumor' or 'Normal'), indexed by sample name.
+    Main entry point: loads expression matrix and sample labels.
     """
     acc = getattr(config, "GEO_ACCESSION", "GSE8671")
     acc_expr = os.path.join(config.DATA_DIR, f"{acc}_expression_matrix.csv")
@@ -264,42 +304,48 @@ def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
 
     # ── If force_synthetic requested, create synthetic data ──
     if force_synthetic:
-        logger.info("Generating synthetic dataset (test mode)...")
+        logger.info("Generating synthetic dataset (explicit test mode)...")
         expr_df, labels = _create_synthetic_dataset()
-        expr_df.to_csv(cache_expr)
-        labels.to_frame().to_csv(cache_labels)
+        test_dir = os.path.join(config.RESULTS_DIR, "synthetic_test")
+        os.makedirs(test_dir, exist_ok=True)
+        expr_df.to_csv(os.path.join(test_dir, "expression_matrix.csv"))
+        _save_labels(labels, os.path.join(test_dir, "sample_labels.csv"))
         return expr_df, labels
 
     # ── Try accession-specific cache first ─────────────────────
     if os.path.exists(acc_expr) and os.path.exists(acc_labels):
         logger.info(f"Loading cached {acc} data...")
         expr_df = pd.read_csv(acc_expr, index_col=0)
-        labels = pd.read_csv(acc_labels, index_col=0).squeeze()
+        labels_df = pd.read_csv(acc_labels, index_col=0)
+        if "patient_id" in labels_df.columns:
+            labels = labels_df["condition"]
+            labels.attrs["patient_id"] = labels_df["patient_id"]
+        else:
+            labels = labels_df.squeeze()
+            labels.attrs["patient_id"] = pd.Series(labels.index, index=labels.index)
+
         # Keep active expression_matrix.csv in sync with current dataset
         expr_df.to_csv(cache_expr)
-        labels.to_frame().to_csv(cache_labels)
-        logger.info(f"Loaded: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples")
+        _save_labels(labels, cache_labels)
+        n_p = labels.attrs["patient_id"].nunique()
+        logger.info(f"Loaded: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples across {n_p} patients")
         return expr_df, labels
 
     # ── Try real GEO series matrix ───────────────────────────
     try:
         expr_df, labels = _load_from_series_matrix()
         expr_df.to_csv(acc_expr)
-        labels.to_frame().to_csv(acc_labels)
+        _save_labels(labels, acc_labels)
         expr_df.to_csv(cache_expr)
-        labels.to_frame().to_csv(cache_labels)
+        _save_labels(labels, cache_labels)
         logger.info(f"Real GEO {acc} data cached for future runs")
         return expr_df, labels
     except Exception as e:
-        logger.warning(f"Failed to load real GEO series matrix for {acc}: {e}")
-        logger.info("Falling back to synthetic data...")
-
-    # ── Fallback: Synthetic data ─────────────────────────────
-    expr_df, labels = _create_synthetic_dataset()
-    expr_df.to_csv(cache_expr)
-    labels.to_frame().to_csv(cache_labels)
-    logger.info(f"Synthetic data: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples")
-    return expr_df, labels
+        logger.error(f"Failed to load authentic GEO series matrix for {acc}: {e}")
+        raise RuntimeError(
+            f"Failed to download or parse authentic GEO data for {acc}: {e}. "
+            "To run with synthetic test data for offline testing, explicitly pass force_synthetic=True."
+        ) from e
 
 
 if __name__ == "__main__":

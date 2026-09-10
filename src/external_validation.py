@@ -30,15 +30,15 @@ _EXT_COHORT_MAP = {
         "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE18nnn/GSE18842/matrix/GSE18842_series_matrix.txt.gz",
     },
     "GSE8671": {
-        "accession": "GSE18842",
+        "accession": "GSE20916",
         "platform": "GPL570",
-        "description": "GSE18842 (Independent Validation Cohort, n=91)",
-        "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE18nnn/GSE18842/matrix/GSE18842_series_matrix.txt.gz",
+        "description": "GSE20916 (Colorectal Cohort, n=145: 101 adenomas/carcinomas + 44 normal mucosa)",
+        "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE20nnn/GSE20916/matrix/GSE20916_series_matrix.txt.gz",
     },
     "GSE15852": {
         "accession": "GSE42568",
         "platform": "GPL570",
-        "description": "GSE42568 (Europe, n=121: 104 tumors + 17 normals)",
+        "description": "GSE42568 (Europe Breast Cohort, n=121: 104 tumors + 17 normals)",
         "matrix_url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE42nnn/GSE42568/matrix/GSE42568_series_matrix.txt.gz",
     },
 }
@@ -87,19 +87,6 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
         labels = pd.read_csv(cache_labels, index_col=0).squeeze()
         return expr_df, labels
 
-    # Check alternative cached cohorts in data/
-    for alt_acc, alt_name in [("GSE18842", "GSE18842 (NSCLC, n=91)"), ("GSE42568", "GSE42568 (Breast, n=121)")]:
-        alt_expr = os.path.join(config.DATA_DIR, f"{alt_acc}_expression.csv")
-        alt_labels = os.path.join(config.DATA_DIR, f"{alt_acc}_labels.csv")
-        if os.path.exists(alt_expr) and os.path.exists(alt_labels):
-            logger.info(f"External validation cohort '{ext_acc}' cache not found. Using available {alt_name}...")
-            config.VALIDATION_COHORT = {
-                "accession": alt_acc,
-                "n": 91 if alt_acc == "GSE18842" else 121,
-                "label": alt_name,
-            }
-            return pd.read_csv(alt_expr, index_col=0), pd.read_csv(alt_labels, index_col=0).squeeze()
-
     matrix_file = os.path.join(config.DATA_DIR, f"{ext_acc}_series_matrix.txt.gz")
     annot_file = os.path.join(config.DATA_DIR, f"{info['platform']}.annot.gz")
     annot_url = (
@@ -108,23 +95,32 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
         else "https://ftp.ncbi.nlm.nih.gov/geo/platforms/GPLnnn/GPL96/annot/GPL96.annot.gz"
     )
 
-    # Download if needed with graceful offline fallback
+    # Download if needed with strict error handling
     import urllib.request
     if not os.path.exists(matrix_file):
         try:
-            logger.info(f"Downloading {ext_acc} series matrix...")
+            logger.info(f"Downloading authentic {ext_acc} series matrix from NCBI GEO...")
             urllib.request.urlretrieve(info["matrix_url"], matrix_file)
         except Exception as e:
-            logger.warning(f"Could not download {ext_acc}: {e}. Falling back to test validation cohort.")
-            return _create_synthetic_external_cohort()
+            if force_synthetic:
+                logger.warning(f"Could not download {ext_acc}: {e}. Using test validation cohort.")
+                return _create_synthetic_external_cohort()
+            raise RuntimeError(
+                f"Failed to download authentic external validation cohort {ext_acc} from {info['matrix_url']}: {e}. "
+                "Cross-study validation cannot proceed without authentic cohort data."
+            ) from e
 
     if not os.path.exists(annot_file):
         try:
             logger.info(f"Downloading {info['platform']} annotation table...")
             urllib.request.urlretrieve(annot_url, annot_file)
         except Exception as e:
-            logger.warning(f"Could not download {info['platform']} annot table: {e}. Falling back to test validation cohort.")
-            return _create_synthetic_external_cohort()
+            if force_synthetic:
+                logger.warning(f"Could not download {info['platform']} annot table: {e}. Using test validation cohort.")
+                return _create_synthetic_external_cohort()
+            raise RuntimeError(
+                f"Failed to download annotation platform {info['platform']} from {annot_url}: {e}."
+            ) from e
 
     try:
         logger.info(f"Parsing {ext_acc} external cohort series matrix...")
@@ -147,7 +143,7 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
         labels_dict = {}
         for i, s_id in enumerate(sample_ids):
             t = sample_titles[i].lower() if i < len(sample_titles) else ""
-            if "normal" in t or "healthy" in t or "adjacent" in t:
+            if any(k in t for k in ["normal", "healthy", "adjacent", "donnor", "control", "non-tumor"]):
                 labels_dict[s_id] = "Normal"
             else:
                 labels_dict[s_id] = "Tumor"
@@ -239,26 +235,24 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
     logger.info(f"Common signature genes present in both cohorts: {len(valid_sig)}/{len(sig_genes)}")
 
     if len(valid_sig) == 0:
-        logger.warning("No overlapping features found between cohorts (synthetic/test mode). Using simulated metrics.")
-        os.makedirs(config.RESULTS_DIR, exist_ok=True)
-        metrics_df = pd.DataFrame([{
-            "discovery_cohort": f"{config.GEO_ACCESSION} (n={len(train_labels)})",
-            "external_cohort": info["description"],
-            "signature_genes": 2,
-            "test_accuracy": 0.95, "roc_auc": 0.98,
-            "sensitivity": 0.95, "specificity": 0.95,
-            "true_positives": 28, "true_negatives": 29,
-            "false_positives": 1, "false_negatives": 2,
-        }])
-        metrics_df.to_csv(os.path.join(config.RESULTS_DIR, "external_validation_metrics.csv"), index=False)
-        pd.DataFrame({"fpr": [0.0, 0.05, 1.0], "tpr": [0.0, 0.95, 1.0]}).to_csv(
-            os.path.join(config.RESULTS_DIR, "external_roc_curve.csv"), index=False
-        )
-        return {
-            "accuracy": 0.95, "roc_auc": 0.98, "sensitivity": 0.95, "specificity": 0.95,
-            "signature_genes": ["SYNTH_1", "SYNTH_2"],
-            "roc_curve": {"fpr": [0.0, 0.05, 1.0], "tpr": [0.0, 0.95, 1.0]}
-        }
+        if force_synthetic:
+            logger.warning("No overlapping features found in synthetic test mode.")
+            out_dir = os.path.join(config.RESULTS_DIR, "synthetic_test")
+            os.makedirs(out_dir, exist_ok=True)
+            metrics_df = pd.DataFrame([{
+                "discovery_cohort": f"{config.GEO_ACCESSION} (SYNTHETIC TEST)",
+                "external_cohort": "Synthetic Test Cohort",
+                "status": "TEST_MODE_NO_OVERLAP",
+                "test_accuracy": np.nan, "roc_auc": np.nan,
+            }])
+            metrics_df.to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
+            return {"accuracy": 0.0, "roc_auc": 0.0, "status": "TEST_MODE"}
+        else:
+            logger.error(f"Zero overlapping signature genes found between discovery ({config.GEO_ACCESSION}) and external ({info['accession']}) cohorts.")
+            raise RuntimeError(
+                f"External validation failed: Zero overlapping features between discovery cohort ({config.GEO_ACCESSION}) "
+                f"and external cohort ({info['accession']}). Halting to prevent false or simulated metric reporting."
+            )
 
     # 4. Train on Discovery, Test on External
     X_train = train_clean.loc[valid_sig].T.values
@@ -287,19 +281,31 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
     logger.info(f"  • Specificity:   {specificity * 100:.2f}% (Normal Tissue Rule-Out)")
     logger.info(f"  • Confusion Matrix: TP={tp}, TN={tn}, FP={fp}, FN={fn}")
 
-    # Save
+    # Save with complete traceable provenance
     metrics_df = pd.DataFrame([{
         "discovery_cohort": f"{config.GEO_ACCESSION} (n={len(train_labels)})",
         "external_cohort": info["description"],
-        "signature_genes": len(valid_sig),
-        "test_accuracy": acc, "roc_auc": auc,
-        "sensitivity": sensitivity, "specificity": specificity,
-        "true_positives": tp, "true_negatives": tn,
-        "false_positives": fp, "false_negatives": fn,
+        "cancer_type": getattr(config, "CANCER_TYPE", "Cancer"),
+        "disease_matched": True,
+        "n_train_samples": len(train_labels),
+        "n_test_samples": len(test_labels),
+        "signature_genes_tested": len(valid_sig),
+        "signature_gene_list": ";".join(valid_sig),
+        "test_accuracy": acc,
+        "roc_auc": auc,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "true_positives": tp,
+        "true_negatives": tn,
+        "false_positives": fp,
+        "false_negatives": fn,
+        "data_provenance": "Authentic NCBI GEO Cross-Cohort Transfer (Zero Retraining)",
     }])
-    os.makedirs(config.RESULTS_DIR, exist_ok=True)
-    metrics_df.to_csv(os.path.join(config.RESULTS_DIR, "external_validation_metrics.csv"), index=False)
-    pd.DataFrame({"fpr": fpr, "tpr": tpr}).to_csv(os.path.join(config.RESULTS_DIR, "external_roc_curve.csv"), index=False)
+
+    out_dir = os.path.join(config.RESULTS_DIR, "synthetic_test") if force_synthetic else config.RESULTS_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    metrics_df.to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
+    pd.DataFrame({"fpr": fpr, "tpr": tpr}).to_csv(os.path.join(out_dir, "external_roc_curve.csv"), index=False)
 
     logger.info("Cross-cohort external validation complete ✓")
     return {"accuracy": acc, "roc_auc": auc, "sensitivity": sensitivity,

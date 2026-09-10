@@ -37,27 +37,48 @@ def compute_fold_change(
 def compute_pvalues(
     expr_df: pd.DataFrame,
     labels: pd.Series,
-) -> pd.Series:
+) -> tuple[pd.Series, str, int]:
     """
-    Compute per-gene p-values using Welch's t-test (unequal variance).
+    Compute per-gene p-values using Paired t-test (if matched intra-patient pairs exist)
+    or Welch's t-test (for independent/unpaired samples).
+
+    Returns
+    -------
+    pvalues : pd.Series
+    test_type : str ("paired_ttest" or "welch_ttest")
+    n_pairs : int (number of matched pairs, or 0)
     """
     tumor_samples = labels[labels == "Tumor"].index
     normal_samples = labels[labels == "Normal"].index
 
-    tumor_expr = expr_df[tumor_samples]
-    normal_expr = expr_df[normal_samples]
+    # Check for matched intra-patient pairs
+    patient_ids = labels.attrs.get("patient_id")
+    if patient_ids is not None:
+        df_samples = pd.DataFrame({"condition": labels, "patient_id": patient_ids}, index=labels.index)
+        p_counts = df_samples.groupby("patient_id")["condition"].value_counts().unstack(fill_value=0)
+        if "Tumor" in p_counts.columns and "Normal" in p_counts.columns:
+            paired_p = p_counts[(p_counts["Tumor"] == 1) & (p_counts["Normal"] == 1)].index
+            if len(paired_p) >= 10:
+                t_map = df_samples[(df_samples["patient_id"].isin(paired_p)) & (df_samples["condition"] == "Tumor")].reset_index().set_index("patient_id")["index"]
+                n_map = df_samples[(df_samples["patient_id"].isin(paired_p)) & (df_samples["condition"] == "Normal")].reset_index().set_index("patient_id")["index"]
 
-    pvalues = []
-    for gene in expr_df.index:
-        t_stat, p_val = stats.ttest_ind(
-            tumor_expr.loc[gene].values,
-            normal_expr.loc[gene].values,
-            equal_var=False,  # Welch's t-test
-            nan_policy="omit",
-        )
-        pvalues.append(p_val)
+                paired_patients_list = list(paired_p)
+                t_ids = [t_map[p] for p in paired_patients_list if t_map[p] in expr_df.columns]
+                n_ids = [n_map[p] for p in paired_patients_list if n_map[p] in expr_df.columns]
 
-    return pd.Series(pvalues, index=expr_df.index, name="pvalue")
+                if len(t_ids) == len(paired_patients_list) and len(n_ids) == len(paired_patients_list):
+                    logger.info(f"Detected {len(paired_patients_list)} matched intra-patient pairs. Executing Paired Student's t-test (stats.ttest_rel)...")
+                    t_vals = expr_df[t_ids].values
+                    n_vals = expr_df[n_ids].values
+                    _, p_vals = stats.ttest_rel(t_vals, n_vals, axis=1, nan_policy="omit")
+                    return pd.Series(p_vals, index=expr_df.index, name="pvalue"), "paired_ttest", len(paired_patients_list)
+
+    # Fallback to Welch's t-test for unpaired samples
+    logger.info(f"Executing Welch's independent unequal-variance t-test ({len(tumor_samples)} Tumor vs {len(normal_samples)} Normal)...")
+    tumor_expr = expr_df[tumor_samples].values
+    normal_expr = expr_df[normal_samples].values
+    _, p_vals = stats.ttest_ind(tumor_expr, normal_expr, axis=1, equal_var=False, nan_policy="omit")
+    return pd.Series(p_vals, index=expr_df.index, name="pvalue"), "welch_ttest", 0
 
 
 def adjust_pvalues(pvalues: pd.Series) -> pd.Series:
@@ -129,8 +150,7 @@ def run_differential_expression(
     log2fc = compute_fold_change(expr_df, labels)
 
     # Step 2: P-values
-    logger.info("Running Welch's t-test for each gene...")
-    pvalues = compute_pvalues(expr_df, labels)
+    pvalues, test_type, n_pairs = compute_pvalues(expr_df, labels)
 
     # Step 3: FDR correction
     logger.info("Applying Benjamini-Hochberg FDR correction...")
@@ -146,6 +166,7 @@ def run_differential_expression(
         "pvalue": pvalues.values,
         "adj_pvalue": adj_pvalues.values,
         "regulation": regulation.values,
+        "test_type": test_type,
         "mean_tumor": expr_df[tumor_samples].mean(axis=1).values,
         "mean_normal": expr_df[normal_samples].mean(axis=1).values,
     })

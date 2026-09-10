@@ -148,16 +148,16 @@ def update_known_markers_for_cancer(cancer_type: str) -> list[str]:
 _SURVIVAL_FALLBACKS = {
     "lung":    {"accession": "GSE31210", "n": 226, "endpoint": "Overall Survival",     "label": "GSE31210, n=226 (NSCLC, Japan)"},
     "breast":  {"accession": "GSE1456",  "n": 159, "endpoint": "Relapse-Free Survival","label": "GSE1456, n=159 (Breast, Sweden)"},
-    "colon":   {"accession": "GSE17536", "n": 177, "endpoint": "Overall Survival",     "label": "GSE17536, n=177 (Colorectal, PETACC-3)"},
-    "crc":     {"accession": "GSE17536", "n": 177, "endpoint": "Overall Survival",     "label": "GSE17536, n=177 (Colorectal, PETACC-3)"},
+    "colon":   {"accession": "GSE39582", "n": 566, "endpoint": "Overall & Relapse-Free Survival", "label": "GSE39582, n=566 (CIT Colorectal Cohort)"},
+    "crc":     {"accession": "GSE39582", "n": 566, "endpoint": "Overall & Relapse-Free Survival", "label": "GSE39582, n=566 (CIT Colorectal Cohort)"},
     "default": {"accession": "GSE31210", "n": 226, "endpoint": "Overall Survival",     "label": "GSE31210, n=226 (NSCLC, Japan)"},
 }
 
 _VALIDATION_FALLBACKS = {
     "lung":    {"accession": "GSE18842", "n": 91,  "label": "GSE18842 (NSCLC, n=91)"},
     "breast":  {"accession": "GSE42568", "n": 121, "label": "GSE42568 (Breast, n=121, Europe)"},
-    "colon":   {"accession": "GSE20916", "n": 90,  "label": "GSE20916 (Colorectal, n=90)"},
-    "crc":     {"accession": "GSE20916", "n": 90,  "label": "GSE20916 (Colorectal, n=90)"},
+    "colon":   {"accession": "GSE20916", "n": 145, "label": "GSE20916 (Colorectal, n=145)"},
+    "crc":     {"accession": "GSE20916", "n": 145, "label": "GSE20916 (Colorectal, n=145)"},
     "default": {"accession": "GSE18842", "n": 91,  "label": "GSE18842 (NSCLC, n=91)"},
 }
 
