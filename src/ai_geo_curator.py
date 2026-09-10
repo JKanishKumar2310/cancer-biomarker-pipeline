@@ -51,6 +51,7 @@ def fetch_geo_metadata(accession: str) -> dict:
     meta_lines = []
     platform = "GPL570"  # default fallback
     series_title = ""
+    supplementary_files = []
     with gzip.open(local_path, "rt", encoding="utf-8", errors="ignore") as f:
         for i, line in enumerate(f):
             if line.startswith("!series_matrix_table_begin"):
@@ -59,6 +60,9 @@ def fetch_geo_metadata(accession: str) -> dict:
                 series_title = line.strip().split("\t", 1)[-1].strip(' "')
             elif line.startswith("!Series_platform_id"):
                 platform = line.strip().split("\t", 1)[-1].strip(' "')
+            elif line.startswith("!Series_supplementary_file"):
+                supp = line.strip().split("\t", 1)[-1].strip(' "')
+                supplementary_files.append(supp)
             meta_lines.append(line)
 
     sample_ids, sample_titles, characteristics = [], [], []
@@ -86,6 +90,7 @@ def fetch_geo_metadata(accession: str) -> dict:
         "series_title": series_title,
         "samples": sample_dict,
         "local_path": local_path,
+        "supplementary_files": supplementary_files,
     }
 
 
@@ -263,8 +268,9 @@ def curate_dataset(accession: str) -> dict:
         }
 
     # Verify that the downloaded series matrix actually contains gene expression rows
-    # (High-throughput RNA-seq series matrices like GSE68086 often omit the data table)
+    # (High-throughput RNA-seq series matrices often omit the data table, but provide a supplementary count matrix)
     has_expression_data = False
+    suppl_url = None
     try:
         with gzip.open(meta["local_path"], "rt", encoding="utf-8", errors="ignore") as f:
             in_table = False
@@ -284,9 +290,20 @@ def curate_dataset(accession: str) -> dict:
         has_expression_data = True
 
     if not has_expression_data:
+        # Check if an external supplementary count/expression matrix is available
+        for s_file in meta.get("supplementary_files", []):
+            s_lower = s_file.lower()
+            if any(ext in s_lower for ext in [".txt.gz", ".tsv.gz", ".csv.gz", ".txt", ".tsv", ".csv"]):
+                if not any(bad in s_lower for bad in ["raw.tar", ".bam", ".sra", ".bw", ".bed", ".bigwig", ".cel"]):
+                    suppl_url = s_file
+                    has_expression_data = True
+                    logger.info(f"  Found supplementary expression matrix for {accession}: {suppl_url}")
+                    break
+
+    if not has_expression_data:
         return {
             "success": False,
-            "error": f"Identified {n_tumor} Tumor vs {n_normal} Normal (Healthy Controls), but {accession} is an RNA-seq study whose expression matrix was published as an external supplementary tarball rather than an embedded series matrix table. Please use standard cohorts with embedded matrices (e.g., GSE8671, GSE19804, GSE15852).",
+            "error": f"Identified {n_tumor} Tumor vs {n_normal} Normal (Healthy Controls), but {accession} contains raw sequencing files without an embedded series matrix table or pre-computed gene count matrix in supplementary files. Please use standard cohorts with embedded matrices (e.g., GSE8671, GSE19804, GSE15852).",
             "accession": accession,
             "counts": counts,
         }
@@ -314,6 +331,7 @@ def curate_dataset(accession: str) -> dict:
         "labels": labels,
         "rationale": rationale,
         "counts": counts,
+        "suppl_url": suppl_url,
     }
 
 

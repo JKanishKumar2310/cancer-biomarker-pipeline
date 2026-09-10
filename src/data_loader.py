@@ -114,37 +114,82 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
     logger.info(f"Parsed labels: {dict(counts)}")
 
     # ── Read expression table ────────────────────────────────
-    logger.info(f"Reading {accession} expression values...")
-    df = pd.read_csv(
-        matrix_file, compression="gzip", skiprows=skiprows, sep="\t", index_col=0, comment="!"
-    )
-    df = df[~df.index.astype(str).str.startswith("!")]
-    df = df.apply(pd.to_numeric, errors="coerce")
+    df_genes = None
+    suppl_url = curation.get("suppl_url") if isinstance(curation, dict) else None
 
-    # ── Map probes → gene symbols ────────────────────────────
-    logger.info(f"Mapping probe IDs to gene symbols via {gpl_id}...")
-    annot_skip = 0
-    with gzip.open(annot_file, "rt", encoding="utf-8", errors="ignore") as f:
-        for i, line in enumerate(f):
-            if line.startswith("!platform_table_begin"):
-                annot_skip = i + 1
-                break
+    if skiprows > 0:
+        logger.info(f"Reading {accession} embedded series matrix values...")
+        try:
+            df = pd.read_csv(
+                matrix_file, compression="gzip", skiprows=skiprows, sep="\t", index_col=0, comment="!"
+            )
+            df = df[~df.index.astype(str).str.startswith("!")]
+            df = df.apply(pd.to_numeric, errors="coerce")
 
-    annot_df = pd.read_csv(
-        annot_file, compression="gzip", skiprows=annot_skip, sep="\t",
-        usecols=["ID", "Gene symbol"], low_memory=False
-    )
-    annot_df = annot_df.dropna(subset=["Gene symbol"])
-    annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
-    annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
+            # ── Map probes → gene symbols ────────────────────────────
+            if os.path.exists(annot_file) and df.shape[0] > 0:
+                logger.info(f"Mapping probe IDs to gene symbols via {gpl_id}...")
+                annot_skip = 0
+                with gzip.open(annot_file, "rt", encoding="utf-8", errors="ignore") as f:
+                    for i, line in enumerate(f):
+                        if line.startswith("!platform_table_begin"):
+                            annot_skip = i + 1
+                            break
 
-    probe_to_gene = dict(zip(annot_df["ID"], annot_df["Gene symbol"]))
-    df["gene"] = df.index.map(probe_to_gene)
-    df = df.dropna(subset=["gene"]).set_index("gene")
-    df_genes = df.groupby(df.index).mean()
+                annot_df = pd.read_csv(
+                    annot_file, compression="gzip", skiprows=annot_skip, sep="\t",
+                    usecols=["ID", "Gene symbol"], low_memory=False
+                )
+                annot_df = annot_df.dropna(subset=["Gene symbol"])
+                annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
+                annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
+
+                probe_to_gene = dict(zip(annot_df["ID"], annot_df["Gene symbol"]))
+                df["gene"] = df.index.map(probe_to_gene)
+                df = df.dropna(subset=["gene"]).set_index("gene")
+                df_genes = df.groupby(df.index).mean()
+            elif df.shape[0] > 0:
+                df_genes = df
+        except Exception as e:
+            logger.warning(f"Could not parse embedded matrix: {e}")
+
+    # Fallback to supplementary count/expression matrix if embedded table is missing or empty
+    if df_genes is None or len(df_genes) == 0:
+        if suppl_url:
+            logger.info(f"Downloading & parsing supplementary count/expression matrix: {suppl_url}...")
+            http_url = suppl_url.replace("ftp://", "https://")
+            suppl_filename = os.path.basename(suppl_url)
+            suppl_local = os.path.join(config.DATA_DIR, f"{accession}_suppl_{suppl_filename}")
+
+            if not os.path.exists(suppl_local):
+                logger.info(f"  Downloading supplementary file from {http_url}...")
+                req = urllib.request.Request(http_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    with open(suppl_local, "wb") as f_out:
+                        f_out.write(resp.read())
+
+            sep = "\t" if ("tsv" in suppl_filename or "txt" in suppl_filename) else ","
+            comp = "gzip" if suppl_filename.endswith(".gz") else None
+            df_suppl = pd.read_csv(suppl_local, sep=sep, compression=comp, index_col=0)
+
+            # Map sample titles to GSM accessions if needed
+            title_to_gsm = dict(zip(sample_titles, sample_ids))
+            df_suppl = df_suppl.rename(columns=title_to_gsm)
+
+            # Clean and filter non-zero
+            df_suppl = df_suppl.apply(pd.to_numeric, errors="coerce").fillna(0)
+            df_suppl = df_suppl.loc[(df_suppl > 0).any(axis=1)]
+            df_genes = df_suppl
+        else:
+            raise ValueError(f"No embedded series matrix table or supplementary count matrix available for {accession}")
 
     # Match common samples
     common = df_genes.columns.intersection(label_series.index)
+    if len(common) == 0:
+        gsm_to_title = dict(zip(sample_ids, sample_titles))
+        label_series.index = label_series.index.map(lambda x: gsm_to_title.get(x, x))
+        common = df_genes.columns.intersection(label_series.index)
+
     df_genes = df_genes[common]
     label_series = label_series[common]
 
