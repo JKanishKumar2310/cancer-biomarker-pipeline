@@ -156,6 +156,26 @@ def run_differential_expression(
         de_results["adj_pvalue"].clip(lower=1e-300)
     )
 
+    # Biological mechanism annotation for hallmark cancer genes
+    mutation_drivers = {"KRAS", "TP53", "APC", "BRAF", "PIK3CA", "PTEN", "NRAS", "EGFR", "SMAD4"}
+    post_translational = {"CTNNB1", "AKT1", "GSK3B", "SRC"}
+    lineage_markers = {"EPCAM", "CDX2", "CEACAM5", "KRT20", "CDH1"}
+
+    def get_mech_note(row):
+        g = str(row["gene"]).upper()
+        reg = row["regulation"]
+        if reg != "Not Significant":
+            return "Transcriptional Driver"
+        if g in mutation_drivers:
+            return "Somatic Mutation Driver (Non-Transcriptomic Activation)"
+        if g in post_translational:
+            return "Post-Translational Driver (Phosphorylation/Nuclear Translocation)"
+        if g in lineage_markers:
+            return "Epithelial Lineage Marker (High Baseline in Normal & Adenoma)"
+        return "Not Significant"
+
+    de_results["mechanistic_note"] = de_results.apply(get_mech_note, axis=1)
+
     # Sort by adjusted p-value
     de_results = de_results.sort_values("adj_pvalue")
 

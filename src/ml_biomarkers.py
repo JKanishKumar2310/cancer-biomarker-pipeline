@@ -113,38 +113,60 @@ def find_consensus_biomarkers(
 
     logger.info("Finding consensus biomarkers (DE + Multi-Model ML)...")
 
-    top_ml = set(ml_ranking.head(top_n).index)
+    # Consider top candidate pool from ML (extended to avoid collinear suppression)
+    ml_pool_size = max(100, top_n * 2)
+    top_ml_genes = set(ml_ranking.head(ml_pool_size).index)
     sig_de = de_results[de_results["regulation"] != "Not Significant"]
-    top_de = set(sig_de.index)
+    top_de_genes = set(sig_de.index)
 
-    consensus_genes = top_ml & top_de
-    logger.info(f"  Top {top_n} ML genes: {len(top_ml)}")
-    logger.info(f"  Significant DE genes: {len(top_de)}")
-    logger.info(f"  Consensus biomarkers: {len(consensus_genes)}")
+    # Initial intersection
+    candidate_genes = top_ml_genes & top_de_genes
+    logger.info(f"  ML candidate pool (top {ml_pool_size}): {len(top_ml_genes)}")
+    logger.info(f"  Significant DE genes: {len(top_de_genes)}")
+    logger.info(f"  Overlapping consensus pool: {len(candidate_genes)}")
 
-    if len(consensus_genes) == 0:
+    if len(candidate_genes) == 0:
         logger.warning("No strict consensus found, relaxing criteria...")
         trending = de_results[de_results["pvalue"] < 0.1]
-        consensus_genes = top_ml & set(trending.index)
-        logger.info(f"  Relaxed consensus: {len(consensus_genes)}")
+        candidate_genes = top_ml_genes & set(trending.index)
+        logger.info(f"  Relaxed consensus: {len(candidate_genes)}")
+
+    # Compute Hybrid Composite Score: balances ML importance with DE effect magnitude
+    # DE magnitude metric = |log2FC| * -log10(adj_pvalue)
+    de_scores = {}
+    for g in candidate_genes:
+        fc = abs(de_results.loc[g, "log2FC"]) if g in de_results.index else 1.0
+        padj = de_results.loc[g, "adj_pvalue"] if g in de_results.index else 0.05
+        neg_log_p = -np.log10(max(padj, 1e-300))
+        de_scores[g] = fc * np.log1p(neg_log_p)
+
+    max_de = max(de_scores.values()) if de_scores else 1.0
+    de_norm = {g: de_scores[g] / max_de for g in de_scores}
 
     consensus_list = []
-    for gene in consensus_genes:
+    for gene in candidate_genes:
+        ens_score = ml_ranking.loc[gene, "ensemble_score"] if gene in ml_ranking.index else 0.0
+        de_component = de_norm.get(gene, 0.0)
+        # Composite score balances ML predictive weight (60%) and biological DE strength (40%)
+        composite = (0.60 * ens_score) + (0.40 * de_component)
+
         row = {
             "gene": gene,
             "log2FC": de_results.loc[gene, "log2FC"] if gene in de_results.index else np.nan,
             "adj_pvalue": de_results.loc[gene, "adj_pvalue"] if gene in de_results.index else np.nan,
             "regulation": de_results.loc[gene, "regulation"] if gene in de_results.index else "Unknown",
-            "ensemble_score": ml_ranking.loc[gene, "ensemble_score"] if gene in ml_ranking.index else 0,
+            "ensemble_score": ens_score,
+            "composite_score": composite,
             "ml_rank": ml_ranking.loc[gene, "ml_rank"] if gene in ml_ranking.index else np.nan,
         }
         consensus_list.append(row)
 
     consensus_df = pd.DataFrame(consensus_list)
     if len(consensus_df) > 0:
-        consensus_df = consensus_df.sort_values("ensemble_score", ascending=False)
+        consensus_df = consensus_df.sort_values("composite_score", ascending=False).head(top_n)
         consensus_df.index = consensus_df["gene"]
 
+    logger.info(f"  Final consensus biomarkers selected: {len(consensus_df)}")
     return consensus_df
 
 
