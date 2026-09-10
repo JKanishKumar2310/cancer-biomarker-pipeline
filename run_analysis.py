@@ -36,6 +36,16 @@ def main(force_synthetic: bool = False):
     """Run the complete biomarker discovery pipeline."""
     start_time = time.time()
 
+    # Test-mode output isolation: synthetic smoke-test runs must never
+    # write into the authentic results directory.
+    if force_synthetic:
+        test_results_dir = os.path.join(config.BASE_DIR, "results", "synthetic_test")
+        os.makedirs(test_results_dir, exist_ok=True)
+        config.RESULTS_DIR = test_results_dir
+        logger.warning(
+            f"TEST MODE: redirecting all outputs to isolated directory -> {test_results_dir}"
+        )
+
     logger.info("╔" + "═" * 58 + "╗")
     logger.info("║  CANCER BIOMARKER DISCOVERY & TRANSLATIONAL PIPELINE     ║")
     logger.info("║  Multi-Cohort Discovery, Validation & Survival Analysis  ║")
