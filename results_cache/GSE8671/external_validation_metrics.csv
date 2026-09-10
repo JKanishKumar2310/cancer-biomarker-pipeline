@@ -1,0 +1,2 @@
+discovery_cohort,external_cohort,signature_genes,test_accuracy,roc_auc,sensitivity,specificity,true_positives,true_negatives,false_positives,false_negatives
+GSE8671 (n=64),"GSE39582 (Colorectal Adenoma & Carcinoma, n=50)",20,0.8681318681318682,0.9236714975845411,0.9565217391304348,0.7777777777777778,44,35,10,2

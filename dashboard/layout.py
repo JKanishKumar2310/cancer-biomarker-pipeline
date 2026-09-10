@@ -53,12 +53,14 @@ def create_layout():
                 children=[
                     html.H1("🧬 Cancer Biomarker Discovery Dashboard"),
                     html.P(
-                        f"Autonomous Discovery Pipeline • Current Dataset: {config.GEO_ACCESSION} ({config.CANCER_TYPE})",
+                        "Autonomous Discovery Pipeline • Standby: Select or Search a Cohort to Begin",
                         id="dashboard-subtitle",
                         className="subtitle",
                     ),
                 ],
             ),
+
+            dcc.Store(id="active-cohort-store", data=None),
 
             # ── AI GEO Dataset Ingestion & Curation Bar ──────
             dbc.Card(
@@ -85,8 +87,8 @@ def create_layout():
                                         [
                                             dbc.Input(
                                                 id="geo-accession-input",
-                                                placeholder="Enter GEO Accession (e.g. GSE19804, GSE8671, GSE15852)...",
-                                                value=config.GEO_ACCESSION,
+                                                placeholder="Enter GEO Accession (e.g. GSE8671, GSE19804, GSE15852)...",
+                                                value="",
                                                 style={"backgroundColor": "rgba(10, 10, 26, 0.8)", "color": FONT_COLOR, "border": "1px solid rgba(255,255,255,0.15)"},
                                             ),
                                             dbc.Button(
@@ -109,6 +111,7 @@ def create_layout():
                                             dbc.Button("Colon (GSE8671)", id="btn-quick-gse8671", size="sm", outline=True, color="info"),
                                             dbc.Button("Lung (GSE19804)", id="btn-quick-gse19804", size="sm", outline=True, color="info"),
                                             dbc.Button("Breast (GSE15852)", id="btn-quick-gse15852", size="sm", outline=True, color="info"),
+                                            dbc.Button("🔄 Standby", id="btn-reset-cohort", size="sm", outline=True, color="secondary"),
                                         ],
                                         size="sm",
                                     ),
@@ -127,6 +130,9 @@ def create_layout():
                     ),
                 ],
             ),
+
+            # ── Standby Welcome Banner ───────────────────────
+            html.Div(id="welcome-banner"),
 
             # ── Stat Cards (populated by callback) ──────────
             html.Div(id="stats-row", className="stats-row"),
@@ -426,7 +432,39 @@ def create_layout():
                         ],
                     ),
 
-                    # Tab 7: AI Oncologist Copilot
+                    # Tab 7: Multi-Omics & Mutations
+                    dbc.Tab(
+                        label="🧬 Multi-Omics & Mutations",
+                        tab_id="tab-multiomics",
+                        children=[
+                            html.Div(
+                                className="plot-container",
+                                children=[
+                                    html.Div("Dual-Omics Integration: Transcriptomics vs. Somatic Mutations", className="plot-title"),
+                                    html.Div(
+                                        "Comparing RNA expression fold change against DNA somatic mutation frequencies from TCGA / COSMIC. "
+                                        "Resolves the 'Jammed Gas Pedal' paradox where mutation-driven kinases (EGFR, KRAS, BRAF) show flat RNA levels.",
+                                        className="plot-subtitle",
+                                    ),
+                                    dcc.Graph(id="multiomics-scatter-plot", config={"displayModeBar": True}, style={"height": "520px"}),
+                                ],
+                            ),
+                            html.Div(
+                                className="plot-container",
+                                style={"marginTop": "20px"},
+                                children=[
+                                    html.Div("Genomic Hotspots & Precision Actionability Catalog", className="plot-title"),
+                                    html.Div(
+                                        "Recurrent oncogenic hotspots, chromosomal fusions, clinical tiers, and matched targeted therapies.",
+                                        className="plot-subtitle",
+                                    ),
+                                    html.Div(id="multiomics-table-content"),
+                                ],
+                            ),
+                        ],
+                    ),
+
+                    # Tab 8: AI Oncologist Copilot
                     dbc.Tab(
                         label="🤖 AI Oncologist Copilot",
                         tab_id="tab-ai-copilot",
@@ -453,7 +491,7 @@ def create_layout():
                                                     ),
                                                 ], md=8),
                                                 dbc.Col([
-                                                    dbc.Badge("GPT-4o Mini", color="info", className="me-2 p-2"),
+                                                    dbc.Badge("NVIDIA Nemotron 3.5 (Free)", color="success", className="me-2 p-2"),
                                                     dbc.Button("🧹 Clear Conversation", id="btn-clear-chat", size="sm", outline=True, color="secondary"),
                                                 ], md=4, className="d-flex justify-content-md-end align-items-center mt-2 mt-md-0"),
                                             ]),

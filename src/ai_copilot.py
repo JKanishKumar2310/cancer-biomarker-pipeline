@@ -15,7 +15,7 @@ import config
 from src.utils import logger
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"
 
 
 def get_api_key() -> str | None:

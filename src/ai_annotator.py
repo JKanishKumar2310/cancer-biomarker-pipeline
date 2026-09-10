@@ -21,7 +21,7 @@ from src.utils import logger
 
 # OpenRouter API endpoint (compatible with OpenAI format)
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-4o-mini"  # Cost-effective, fast, good for annotation
+DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"  # Ultra-fast, zero-cost NVIDIA Nemotron 3.5
 
 
 def get_api_key() -> str | None:
@@ -302,7 +302,7 @@ def annotate_gene(gene_name: str, context: dict, api_key: str, model: str = None
     api_key : str
         OpenRouter API key.
     model : str
-        LLM model to use (default: gpt-4o-mini).
+        LLM model to use (default: nvidia/nemotron-3.5-lightning:free).
 
     Returns
     -------

@@ -140,7 +140,7 @@ def curate_with_llm(accession: str, series_title: str, samples: dict, api_key: s
     )
 
     payload = {
-        "model": "openai/gpt-4o-mini",
+        "model": "nvidia/nemotron-3.5-lightning:free",
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
     }

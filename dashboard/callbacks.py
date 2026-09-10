@@ -34,6 +34,7 @@ def load_results():
         "drugs": "drug_actionability.csv",
         "ext_metrics": "external_validation_metrics.csv",
         "ext_roc": "external_roc_curve.csv",
+        "multi_omics": "multi_omics_integration.csv",
     }
     for key, filename in files.items():
         filepath = os.path.join(config.RESULTS_DIR, filename)
@@ -60,19 +61,70 @@ def load_results():
     return results
 
 
-# Load data once at import
-RESULTS = load_results()
+# Start in standby mode with empty results until user selects or searches a cohort
+RESULTS = {}
 
 
 def register_callbacks(app):
     """Register all Dash callbacks with the app."""
 
+    # ── Welcome / Standby Banner ──────────────────────────────
+    @app.callback(
+        Output("welcome-banner", "children"),
+        Input("active-cohort-store", "data"),
+    )
+    def update_welcome_banner(active_cohort):
+        if not active_cohort:
+            return dbc.Alert(
+                [
+                    html.Div([
+                        html.H4("🔬 Platform in Standby Mode — No Dataset Loaded", className="m-0", style={"color": CYAN, "fontWeight": "700"}),
+                        dbc.Badge("Awaiting Selection", color="warning", className="ms-2 p-2"),
+                    ], className="d-flex align-items-center mb-2"),
+                    html.P(
+                        "Welcome to the Autonomous Cancer Biomarker Discovery Platform. "
+                        "The workspace is currently in a clean standby state. To begin computational discovery, "
+                        "click one of the validated fast-load cohorts above or type any NCBI GEO accession into the search bar.",
+                        className="mb-2 text-light",
+                        style={"fontSize": "0.95rem"}
+                    ),
+                    html.Div([
+                        html.B("Validated Fast-Load Cohorts: ", style={"color": "#38bdf8"}),
+                        html.Span("• Colon (GSE8671, Wnt pathway)  • Lung NSCLC (GSE19804, Semaphorins)  • Breast (GSE15852, Luminal Keratins)", style={"color": "#94a3b8"}),
+                    ], style={"fontSize": "0.85rem"}),
+                ],
+                style={
+                    "backgroundColor": "rgba(15, 23, 42, 0.85)",
+                    "border": f"1px dashed {CYAN}",
+                    "borderRadius": "12px",
+                    "padding": "20px",
+                    "marginBottom": "20px",
+                }
+            )
+        acc = active_cohort.get("accession", "Active")
+        ctype = active_cohort.get("cancer_type", "Cancer")
+        return dbc.Alert([
+            html.B(f"🎯 Active Cohort Loaded: {acc} "),
+            f"— {ctype}. All differential expression, machine learning, and multi-omics tabs are live!",
+        ], color="info", className="p-2 mb-3", style={"fontSize": "0.88rem"})
+
     # ── Stats Row ────────────────────────────────────────────
     @app.callback(
         Output("stats-row", "children"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_stats(_tab):
+    def update_stats(_tab, active_cohort):
+        if not active_cohort or not RESULTS.get("de_results", pd.DataFrame()).shape[0]:
+            cards = [
+                make_stat_card("—", "Total Genes", "cyan", 1),
+                make_stat_card("—", "Upregulated", "green", 2),
+                make_stat_card("—", "Downregulated", "pink", 3),
+                make_stat_card("—", "Consensus Biomarkers", "purple", 4),
+                make_stat_card("—", "Samples", "orange", 5),
+            ]
+            return html.Div(cards, style={"display": "contents"})
+
         de = RESULTS.get("de_results", pd.DataFrame())
         consensus = RESULTS.get("consensus", pd.DataFrame())
         expr = RESULTS.get("expression", pd.DataFrame())
@@ -659,76 +711,107 @@ def register_callbacks(app):
 
         return roc_fig, metrics_content
 
-    # ── Quick Select Cohort Buttons ──────────────────────────
-    @app.callback(
-        Output("geo-accession-input", "value"),
-        [Input("btn-quick-gse8671", "n_clicks"),
-         Input("btn-quick-gse19804", "n_clicks"),
-         Input("btn-quick-gse15852", "n_clicks")],
-        prevent_initial_call=True,
-    )
-    def update_geo_input(c1, c2, c3):
-        if not ctx.triggered_id:
-            return no_update
-        mapping = {
-            "btn-quick-gse8671": "GSE8671",
-            "btn-quick-gse19804": "GSE19804",
-            "btn-quick-gse15852": "GSE15852",
-        }
-        return mapping.get(ctx.triggered_id, no_update)
+    # ── Cohort Loading & Standby Actions ─────────────────────
+    def activate_cached_cohort(accession: str, cancer_type: str):
+        import shutil
+        cache_dir = os.path.join(config.BASE_DIR, "results_cache", accession)
+        if os.path.exists(cache_dir):
+            for f in os.listdir(cache_dir):
+                src = os.path.join(cache_dir, f)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(config.RESULTS_DIR, f))
 
-    # ── AI Ingestion & Analysis Runner ───────────────────────
+        expr_cache = os.path.join(config.DATA_DIR, f"{accession}_expression_matrix.csv")
+        label_cache = os.path.join(config.DATA_DIR, f"{accession}_sample_labels.csv")
+        if os.path.exists(expr_cache):
+            shutil.copy2(expr_cache, os.path.join(config.DATA_DIR, "expression_matrix.csv"))
+        if os.path.exists(label_cache):
+            shutil.copy2(label_cache, os.path.join(config.DATA_DIR, "sample_labels.csv"))
+
+        config.GEO_ACCESSION = accession
+        config.CANCER_TYPE = cancer_type
+        RESULTS.clear()
+        RESULTS.update(load_results())
+
     @app.callback(
-        [Output("geo-status-output", "children"),
-         Output("dashboard-subtitle", "children")],
-        Input("btn-run-geo", "n_clicks"),
+        [
+            Output("active-cohort-store", "data"),
+            Output("dashboard-subtitle", "children"),
+            Output("geo-status-output", "children"),
+            Output("geo-accession-input", "value"),
+        ],
+        [
+            Input("btn-quick-gse8671", "n_clicks"),
+            Input("btn-quick-gse19804", "n_clicks"),
+            Input("btn-quick-gse15852", "n_clicks"),
+            Input("btn-reset-cohort", "n_clicks"),
+            Input("btn-run-geo", "n_clicks"),
+        ],
         State("geo-accession-input", "value"),
         prevent_initial_call=True,
     )
-    def run_ai_curation_and_analysis(n_clicks, accession):
-        if not n_clicks or not accession:
-            return no_update, no_update
+    def handle_cohort_actions(c_colon, c_lung, c_breast, c_reset, c_run, accession_input):
+        triggered = ctx.triggered_id
+        if not triggered:
+            return no_update, no_update, no_update, no_update
 
-        accession = accession.strip().upper()
-        from src.ai_geo_curator import curate_dataset
-        import run_analysis
-
-        # Step 1: Curate
-        curation = curate_dataset(accession)
-        if not curation.get("success"):
-            err_msg = curation.get("error", "Unknown curation error")
-            return dbc.Alert(f"❌ AI Curation Failed: {err_msg}", color="danger", dismissable=True), no_update
-
-        # Step 2: Configure
-        config.GEO_ACCESSION = accession
-        config.CANCER_TYPE = curation.get("cancer_type", f"Cancer ({accession})")
-
-        # Clear discovery cache
-        for f in ["expression_matrix.csv", "sample_labels.csv"]:
-            p = os.path.join(config.DATA_DIR, f)
-            if os.path.exists(p):
-                os.remove(p)
-
-        # Step 3: Run pipeline
-        try:
-            run_analysis.main()
-            # Step 4: Reload RESULTS in memory
+        if triggered == "btn-reset-cohort":
             RESULTS.clear()
-            RESULTS.update(load_results())
-        except Exception as e:
-            return dbc.Alert(f"❌ Pipeline error after curation: {e}", color="danger", dismissable=True), no_update
+            return None, "Autonomous Discovery Pipeline • Standby: Select or Search a Cohort to Begin", dbc.Alert("🔄 Platform reset to standby mode. Select a cohort above to begin.", color="secondary", dismissable=True), ""
 
-        status_alert = dbc.Alert([
-            html.B("✅ AI Curation & Analysis Complete! "),
-            f"Dataset {accession} ({curation['cancer_type']}) • ",
-            f"Platform: {curation['platform']} • ",
-            f"Classified: {curation['n_tumor']} Tumor vs {curation['n_normal']} Normal samples. ",
-            html.Span(f"({curation['rationale']})", style={"fontStyle": "italic", "color": "#cbd5e1"}),
-            html.Div("Dashboard re-indexed. Switch tabs to explore new findings!", className="mt-1", style={"fontWeight": "600"}),
-        ], color="success", dismissable=True)
+        if triggered == "btn-quick-gse8671":
+            activate_cached_cohort("GSE8671", "Colorectal Adenoma & Carcinoma (CRC)")
+            data = {"accession": "GSE8671", "cancer_type": "Colorectal Adenoma & Carcinoma (CRC)"}
+            sub = "Autonomous Discovery Pipeline • Active Dataset: GSE8671 (Colorectal Adenoma & Carcinoma)"
+            status = dbc.Alert("✅ Loaded Colorectal Cohort (GSE8671, 64 samples) instantly from validated cache!", color="success", dismissable=True)
+            return data, sub, status, "GSE8671"
 
-        new_subtitle = f"Autonomous Discovery Pipeline • Current Dataset: {accession} ({config.CANCER_TYPE})"
-        return status_alert, new_subtitle
+        if triggered == "btn-quick-gse19804":
+            activate_cached_cohort("GSE19804", "Non-Small Cell Lung Cancer (NSCLC)")
+            data = {"accession": "GSE19804", "cancer_type": "Non-Small Cell Lung Cancer (NSCLC)"}
+            sub = "Autonomous Discovery Pipeline • Active Dataset: GSE19804 (Non-Small Cell Lung Cancer)"
+            status = dbc.Alert("✅ Loaded Lung Cancer Cohort (GSE19804, 120 samples) instantly from validated cache!", color="success", dismissable=True)
+            return data, sub, status, "GSE19804"
+
+        if triggered == "btn-quick-gse15852":
+            activate_cached_cohort("GSE15852", "Invasive Breast Carcinoma")
+            data = {"accession": "GSE15852", "cancer_type": "Invasive Breast Carcinoma"}
+            sub = "Autonomous Discovery Pipeline • Active Dataset: GSE15852 (Invasive Breast Carcinoma)"
+            status = dbc.Alert("✅ Loaded Breast Cancer Cohort (GSE15852, 86 samples) instantly from validated cache!", color="success", dismissable=True)
+            return data, sub, status, "GSE15852"
+
+        if triggered == "btn-run-geo":
+            if not accession_input or not accession_input.strip():
+                return no_update, no_update, dbc.Alert("⚠️ Please enter a valid GEO accession.", color="warning", dismissable=True), no_update
+            acc = accession_input.strip().upper()
+            from src.ai_geo_curator import curate_dataset
+            import run_analysis
+            curation = curate_dataset(acc)
+            if not curation.get("success"):
+                err_msg = curation.get("error", "Unknown curation error")
+                return no_update, no_update, dbc.Alert(f"❌ AI Curation Failed: {err_msg}", color="danger", dismissable=True), no_update
+
+            config.GEO_ACCESSION = acc
+            config.CANCER_TYPE = curation.get("cancer_type", f"Cancer ({acc})")
+            for f in ["expression_matrix.csv", "sample_labels.csv"]:
+                p = os.path.join(config.DATA_DIR, f)
+                if os.path.exists(p):
+                    os.remove(p)
+            try:
+                run_analysis.main()
+                RESULTS.clear()
+                RESULTS.update(load_results())
+            except Exception as e:
+                return no_update, no_update, dbc.Alert(f"❌ Pipeline error after curation: {e}", color="danger", dismissable=True), no_update
+
+            data = {"accession": acc, "cancer_type": config.CANCER_TYPE}
+            sub = f"Autonomous Discovery Pipeline • Active Dataset: {acc} ({config.CANCER_TYPE})"
+            status = dbc.Alert([
+                html.B("✅ AI Curation & Analysis Complete! "),
+                f"Dataset {acc} ({curation['cancer_type']}) • ",
+                f"Classified: {curation['n_tumor']} Tumor vs {curation['n_normal']} Normal. Explore tabs!",
+            ], color="success", dismissable=True)
+            return data, sub, status, acc
 
     # ── Dynamic Controls & Cohort Titles Callback ────────────
     @app.callback(
@@ -899,11 +982,161 @@ def register_callbacks(app):
                                     dcc.Markdown(msg["content"], dangerously_allow_html=True),
                                     className="chat-bubble-assistant",
                                 ),
-                                html.Div(f"🤖 AI Copilot (GPT-4o Mini) • {now_str}", className="chat-meta"),
+                                html.Div(f"🤖 AI Copilot (NVIDIA Nemotron 3.5 Free) • {now_str}", className="chat-meta"),
                             ], style={"maxWidth": "90%"}),
                         ],
                     )
                 )
+
+        # ── Multi-Omics Callbacks ──────────────────────────────
+        @app.callback(
+            Output("multiomics-scatter-plot", "figure"),
+            Input("main-tabs", "active_tab"),
+        )
+        def update_multiomics_scatter(tab):
+            mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
+            if not os.path.exists(mo_path):
+                return _empty_figure("No Multi-Omics integration data found. Run multi-omics analysis.")
+            df = pd.read_csv(mo_path)
+            if df.empty:
+                return _empty_figure("Multi-Omics table is empty.")
+
+            fig = go.Figure()
+
+            # Group by badge category
+            badge_styles = {
+                "[DUAL-OMICS]": {"color": "#f43f5e", "name": "Dual Omics (RNA + DNA)", "symbol": "diamond", "size": 14},
+                "[MUTATION-ONLY]": {"color": "#f59e0b", "name": "Pure Genomic (Jammed Pedal)", "symbol": "circle", "size": 13},
+                "[RNA-DRIVEN]": {"color": "#06b6d4", "name": "Pure Transcriptomic (Stromal/ECM)", "symbol": "square", "size": 12},
+                "[MINOR]": {"color": "#94a3b8", "name": "Sub-threshold", "symbol": "circle-open", "size": 8},
+            }
+
+            for badge, style in badge_styles.items():
+                sub = df[df["badge"] == badge]
+                if sub.empty:
+                    continue
+                hover_text = [
+                    f"<b>Gene: {row['gene']}</b> ({row['cancer_type']})<br>"
+                    f"Mutation Frequency: <b>{row['mutation_frequency_pct']}%</b><br>"
+                    f"RNA Log2FC: <b>{row['rna_log2fc']}</b> ({row['rna_status']})<br>"
+                    f"Alteration: {row['alteration_type']}<br>"
+                    f"Hotspots: {row['hotspot_alterations']}<br>"
+                    f"Targeted Drug: {row['targeted_therapies']}"
+                    for _, row in sub.iterrows()
+                ]
+                fig.add_trace(go.Scatter(
+                    x=sub["rna_log2fc"],
+                    y=sub["mutation_frequency_pct"],
+                    mode="markers+text",
+                    text=sub["gene"],
+                    textposition="top center",
+                    textfont=dict(size=10, color=FONT_COLOR),
+                    name=style["name"],
+                    hoverinfo="text",
+                    hovertext=hover_text,
+                    marker=dict(
+                        size=style["size"],
+                        color=style["color"],
+                        symbol=style["symbol"],
+                        line=dict(width=1, color="#ffffff"),
+                    ),
+                ))
+
+            # Threshold reference lines
+            fig.add_vline(x=1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Up Cutoff (Log2FC=1)", annotation_font_size=9, annotation_font_color="#a0a0b0")
+            fig.add_vline(x=-1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Down Cutoff (Log2FC=-1)", annotation_font_size=9, annotation_font_color="#a0a0b0")
+            fig.add_hline(y=5.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Recurrent Mutation Cutoff (5%)", annotation_font_size=9, annotation_font_color="#a0a0b0")
+
+            # Region Annotations
+            fig.add_annotation(
+                x=0, y=df["mutation_frequency_pct"].max() * 0.95,
+                text="<b>🔒 Jammed Gas Pedals</b><br>High Mutations & Flat RNA<br>(EGFR, KRAS, BRAF, TP53)",
+                showarrow=False,
+                font=dict(size=11, color="#f59e0b"),
+                bgcolor="rgba(245, 158, 11, 0.12)",
+                bordercolor="rgba(245, 158, 11, 0.4)",
+                borderwidth=1,
+                borderpad=4,
+            )
+
+            fig.update_layout(
+                **PLOT_LAYOUT_DEFAULTS,
+                title="Cross-Omics Landscape: Transcriptomic Fold-Change vs. DNA Mutation Frequency",
+                xaxis_title="Transcriptomic Log2 Fold Change (Tumor vs Normal)",
+                yaxis_title="DNA Somatic Mutation Frequency (% in Cancer)",
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1,
+                    font=dict(color=FONT_COLOR, size=10),
+                ),
+                height=520,
+            )
+            return fig
+
+        @app.callback(
+            Output("multiomics-table-content", "children"),
+            Input("main-tabs", "active_tab"),
+        )
+        def update_multiomics_table(tab):
+            mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
+            if not os.path.exists(mo_path):
+                return html.Div("No multi-omics data available.", className="text-muted p-3")
+            df = pd.read_csv(mo_path)
+            if df.empty:
+                return html.Div("Multi-omics table is empty.", className="text-muted p-3")
+
+            rows = []
+            for _, r in df.iterrows():
+                badge = str(r.get("badge", ""))
+                if "DUAL" in badge:
+                    badge_color = "danger"
+                elif "MUTATION" in badge:
+                    badge_color = "warning"
+                elif "RNA" in badge:
+                    badge_color = "info"
+                else:
+                    badge_color = "secondary"
+
+                rows.append(
+                    html.Tr([
+                        html.Td(html.B(r["gene"]), style={"color": CYAN}),
+                        html.Td(dbc.Badge(r.get("badge", ""), color=badge_color, className="px-2 py-1")),
+                        html.Td(f"{r['mutation_frequency_pct']}%", style={"fontWeight": "600", "color": "#fbbf24" if r['mutation_frequency_pct'] >= 5 else FONT_COLOR}),
+                        html.Td(f"{r['rna_log2fc']:+.2f}", style={"color": "#4ade80" if r['rna_log2fc'] > 0 else "#f43f5e" if r['rna_log2fc'] < 0 else FONT_COLOR}),
+                        html.Td(r.get("rna_status", "N/A"), style={"fontSize": "0.85rem"}),
+                        html.Td(r.get("hotspot_alterations", "N/A"), style={"fontSize": "0.82rem", "maxWidth": "220px", "wordBreak": "break-word"}),
+                        html.Td(r.get("targeted_therapies", "None"), style={"fontSize": "0.85rem", "color": "#38bdf8"}),
+                        html.Td(dbc.Badge(r.get("clinical_tier", "Tier 2"), color="dark", className="border text-light", style={"fontSize": "0.75rem"})),
+                    ])
+                )
+
+            table = dbc.Table(
+                [
+                    html.Thead(
+                        html.Tr([
+                            html.Th("Gene"),
+                            html.Th("Omics Class"),
+                            html.Th("DNA Mut %"),
+                            html.Th("RNA Log2FC"),
+                            html.Th("RNA Status"),
+                            html.Th("Hotspot Alterations / Fusions"),
+                            html.Th("Targeted Therapies"),
+                            html.Th("Clinical Tier"),
+                        ])
+                    ),
+                    html.Tbody(rows),
+                ],
+                bordered=False,
+                hover=True,
+                responsive=True,
+                striped=True,
+                className="table-dark table-sm align-middle mt-2",
+                style={"backgroundColor": "transparent"},
+            )
+            return table
 
         return rendered_messages, history, ""
 
