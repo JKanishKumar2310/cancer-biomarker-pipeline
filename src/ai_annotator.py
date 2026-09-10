@@ -33,6 +33,262 @@ def get_api_key() -> str | None:
     return key
 
 
+def fetch_known_markers_from_llm(cancer_type: str, api_key: str, model: str = None) -> list[str]:
+    """
+    Ask the LLM to return the canonical known marker genes for a given cancer type.
+
+    This replaces the hardcoded KNOWN_MARKERS list in config.py with an
+    AI-generated, cancer-specific list that updates automatically whenever
+    a new dataset is loaded.
+
+    Parameters
+    ----------
+    cancer_type : str
+        Human-readable cancer type string (e.g. 'Lung Adenocarcinoma').
+    api_key : str
+        OpenRouter API key.
+    model : str
+        LLM model to use.
+
+    Returns
+    -------
+    list of str
+        Gene symbols (e.g. ['EGFR', 'KRAS', 'TP53', ...]).
+        Returns empty list on failure (caller falls back to config.KNOWN_MARKERS).
+    """
+    import urllib.request
+
+    if model is None:
+        model = DEFAULT_MODEL
+
+    prompt = (
+        f"You are an expert cancer biologist. For the cancer type: '{cancer_type}', "
+        "provide a list of the 25 most important and well-established known marker genes "
+        "that are routinely used as hallmarks, diagnostic markers, or therapeutic targets.\n\n"
+        "Rules:\n"
+        "- Return ONLY official HGNC gene symbols (e.g. EGFR, TP53, KRAS).\n"
+        "- Include oncogenes, tumor suppressors, proliferation markers, and pathway drivers.\n"
+        "- Only include genes with strong published evidence in this specific cancer type.\n"
+        "- Return a JSON object with a single key 'markers' whose value is an array of gene symbol strings.\n"
+        "Example: {\"markers\": [\"EGFR\", \"KRAS\", \"TP53\", \"ALK\", \"MKI67\"]}"
+    )
+
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a precise cancer biology expert. Return only well-established, peer-reviewed marker genes as valid HGNC symbols.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 400,
+        "temperature": 0.1,
+    }).encode("utf-8")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://cancer-biomarker-dashboard.local",
+        "X-Title": "Cancer Biomarker Discovery",
+    }
+
+    try:
+        req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            content = json.loads(result["choices"][0]["message"]["content"])
+            markers = content.get("markers", [])
+            # Sanitise: keep only strings that look like gene symbols
+            markers = [g.strip().upper() for g in markers if isinstance(g, str) and g.strip()]
+            logger.info(f"  AI fetched {len(markers)} known markers for '{cancer_type}': {', '.join(markers[:8])}...")
+            return markers
+    except Exception as e:
+        logger.warning(f"  fetch_known_markers_from_llm failed: {e}")
+        return []
+
+
+def update_known_markers_for_cancer(cancer_type: str) -> list[str]:
+    """
+    Update config.KNOWN_MARKERS dynamically using the LLM.
+
+    Called automatically after AI curation detects the cancer type.
+    Falls back to the existing hardcoded list if the API is unavailable.
+
+    Parameters
+    ----------
+    cancer_type : str
+        Detected cancer type string from curate_dataset().
+
+    Returns
+    -------
+    list of str
+        The new KNOWN_MARKERS list (also stored in config.KNOWN_MARKERS).
+    """
+    api_key = get_api_key()
+    if not api_key:
+        logger.info("  No API key — keeping existing KNOWN_MARKERS from config.py")
+        return config.KNOWN_MARKERS
+
+    logger.info(f"  Fetching cancer-specific known markers for: {cancer_type}")
+    markers = fetch_known_markers_from_llm(cancer_type, api_key)
+
+    if markers:
+        config.KNOWN_MARKERS = markers
+        logger.info(f"  ✅ KNOWN_MARKERS updated to {len(markers)} genes for {cancer_type}")
+    else:
+        logger.info("  ⚠️  LLM marker fetch failed — keeping existing KNOWN_MARKERS")
+
+    return config.KNOWN_MARKERS
+
+
+# ── Step 3: AI-Selected Survival Cohort ─────────────────────────────────────
+
+_SURVIVAL_FALLBACKS = {
+    "lung":    {"accession": "GSE31210", "n": 226, "endpoint": "Overall Survival",     "label": "GSE31210, n=226 (NSCLC, Japan)"},
+    "breast":  {"accession": "GSE1456",  "n": 159, "endpoint": "Relapse-Free Survival","label": "GSE1456, n=159 (Breast, Sweden)"},
+    "colon":   {"accession": "GSE17536", "n": 177, "endpoint": "Overall Survival",     "label": "GSE17536, n=177 (Colorectal, PETACC-3)"},
+    "crc":     {"accession": "GSE17536", "n": 177, "endpoint": "Overall Survival",     "label": "GSE17536, n=177 (Colorectal, PETACC-3)"},
+    "default": {"accession": "GSE31210", "n": 226, "endpoint": "Overall Survival",     "label": "GSE31210, n=226 (NSCLC, Japan)"},
+}
+
+_VALIDATION_FALLBACKS = {
+    "lung":    {"accession": "GSE18842", "n": 91,  "label": "GSE18842 (NSCLC, n=91)"},
+    "breast":  {"accession": "GSE42568", "n": 121, "label": "GSE42568 (Breast, n=121, Europe)"},
+    "colon":   {"accession": "GSE20916", "n": 90,  "label": "GSE20916 (Colorectal, n=90)"},
+    "crc":     {"accession": "GSE20916", "n": 90,  "label": "GSE20916 (Colorectal, n=90)"},
+    "default": {"accession": "GSE18842", "n": 91,  "label": "GSE18842 (NSCLC, n=91)"},
+}
+
+
+def _llm_query_cohort(prompt: str, api_key: str) -> dict | None:
+    """Shared helper: send a prompt, parse JSON response."""
+    import urllib.request
+    payload = json.dumps({
+        "model": DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a bioinformatics expert. Return only valid JSON as instructed."},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 200,
+        "temperature": 0.1,
+    }).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://cancer-biomarker-dashboard.local",
+        "X-Title": "Cancer Biomarker Discovery",
+    }
+    try:
+        req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return json.loads(result["choices"][0]["message"]["content"])
+    except Exception as e:
+        logger.warning(f"  LLM cohort query failed: {e}")
+        return None
+
+
+def fetch_survival_cohort_from_llm(cancer_type: str, api_key: str) -> dict:
+    """
+    Ask the LLM to recommend the best public GEO survival cohort for a cancer type.
+
+    Returns
+    -------
+    dict with keys: accession, n, endpoint, label
+    """
+    prompt = (
+        f"You are a bioinformatics expert. Recommend the single best publicly available "
+        f"NCBI GEO dataset for survival analysis of '{cancer_type}'.\n"
+        "Requirements: must have overall survival or relapse-free survival data, "
+        "Affymetrix microarray preferred, at least 50 patients.\n"
+        "Return a JSON object with keys:\n"
+        "  'accession': GEO accession (e.g. 'GSE31210')\n"
+        "  'n': sample count as integer\n"
+        "  'endpoint': 'Overall Survival' or 'Relapse-Free Survival'\n"
+        "  'label': short human-readable label e.g. 'GSE31210, n=226 (NSCLC, Japan)'"
+    )
+    result = _llm_query_cohort(prompt, api_key)
+    if result and "accession" in result:
+        logger.info(f"  AI selected survival cohort: {result.get('label', result['accession'])}")
+        return result
+
+    # Fallback: match on cancer_type keywords
+    ct_lower = cancer_type.lower()
+    for key in _SURVIVAL_FALLBACKS:
+        if key in ct_lower:
+            fb = _SURVIVAL_FALLBACKS[key]
+            logger.info(f"  Using fallback survival cohort: {fb['label']}")
+            return fb
+    fb = _SURVIVAL_FALLBACKS["default"]
+    logger.info(f"  Using default survival cohort: {fb['label']}")
+    return fb
+
+
+def fetch_validation_cohort_from_llm(cancer_type: str, api_key: str) -> dict:
+    """
+    Ask the LLM to recommend the best independent GEO cohort for external validation.
+
+    Returns
+    -------
+    dict with keys: accession, n, label
+    """
+    prompt = (
+        f"You are a bioinformatics expert. Recommend the single best independent "
+        f"NCBI GEO dataset for external validation of '{cancer_type}' biomarkers.\n"
+        "Requirements: must have Tumor vs Normal samples, Affymetrix microarray preferred, "
+        "at least 40 patients, different institution from the discovery cohort.\n"
+        "Return a JSON object with keys:\n"
+        "  'accession': GEO accession (e.g. 'GSE18842')\n"
+        "  'n': sample count as integer\n"
+        "  'label': short human-readable label e.g. 'GSE18842 (NSCLC, n=91)'"
+    )
+    result = _llm_query_cohort(prompt, api_key)
+    if result and "accession" in result:
+        logger.info(f"  AI selected validation cohort: {result.get('label', result['accession'])}")
+        return result
+
+    # Fallback
+    ct_lower = cancer_type.lower()
+    for key in _VALIDATION_FALLBACKS:
+        if key in ct_lower:
+            fb = _VALIDATION_FALLBACKS[key]
+            logger.info(f"  Using fallback validation cohort: {fb['label']}")
+            return fb
+    fb = _VALIDATION_FALLBACKS["default"]
+    logger.info(f"  Using default validation cohort: {fb['label']}")
+    return fb
+
+
+def fetch_cohorts_for_cancer(cancer_type: str) -> dict:
+    """
+    Convenience wrapper: fetch both survival and validation cohorts in one call.
+
+    Returns
+    -------
+    dict with keys:
+        'survival'   → {accession, n, endpoint, label}
+        'validation' → {accession, n, label}
+    """
+    api_key = get_api_key()
+    if not api_key:
+        ct_lower = cancer_type.lower()
+
+        surv_key = next((k for k in _SURVIVAL_FALLBACKS if k in ct_lower), "default")
+        val_key  = next((k for k in _VALIDATION_FALLBACKS if k in ct_lower), "default")
+        return {
+            "survival":   _SURVIVAL_FALLBACKS[surv_key],
+            "validation": _VALIDATION_FALLBACKS[val_key],
+        }
+
+    logger.info(f"  Fetching cohorts for: {cancer_type}")
+    survival   = fetch_survival_cohort_from_llm(cancer_type, api_key)
+    validation = fetch_validation_cohort_from_llm(cancer_type, api_key)
+    return {"survival": survival, "validation": validation}
+
+
 def annotate_gene(gene_name: str, context: dict, api_key: str, model: str = None) -> str:
     """
     Query the LLM for a biological annotation of a single gene.
@@ -61,6 +317,9 @@ def annotate_gene(gene_name: str, context: dict, api_key: str, model: str = None
     pval = context.get("adj_pvalue", 1)
 
     cancer_desc = getattr(config, "CANCER_TYPE", "oncology")
+    if str(gene_name).startswith("GENE_") or str(gene_name).startswith("feat_"):
+        return f"Synthetic biomarker feature ({gene_name}) generated for benchmarking and smoke tests (log2FC = {log2fc:.2f}, {regulation})."
+
     prompt = f"""You are a cancer biology expert. Provide a brief (2-3 sentence) annotation for the gene {gene_name} in the context of {cancer_desc}.
 
 Gene: {gene_name}
@@ -74,41 +333,46 @@ Include:
 Be precise and cite only well-established facts. If you are uncertain, say so explicitly.
 Respond in 2-3 concise sentences only."""
 
-    try:
-        import urllib.request
+    import urllib.request
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://cancer-biomarker-dashboard.local",
-            "X-Title": "Cancer Biomarker Discovery",
-        }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://cancer-biomarker-dashboard.local",
+        "X-Title": "Cancer Biomarker Discovery",
+    }
 
-        payload = json.dumps({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a precise cancer biology expert. Only state well-established facts. If unsure, explicitly say 'uncertain' or 'not well-characterized'."},
-                {"role": "user", "content": prompt},
-            ],
-            "max_tokens": 200,
-            "temperature": 0.2,  # Low temperature for factual accuracy
-        }).encode("utf-8")
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a precise cancer biology expert. Only state well-established facts. If unsure, explicitly say 'uncertain' or 'not well-characterized'."},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 200,
+        "temperature": 0.2,  # Low temperature for factual accuracy
+    }).encode("utf-8")
 
-        req = urllib.request.Request(
-            OPENROUTER_API_URL,
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
+    last_err = None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                OPENROUTER_API_URL,
+                data=payload,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                annotation = result["choices"][0]["message"]["content"].strip()
+                return annotation
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+                continue
 
-        with urllib.request.urlopen(req, timeout=30) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            annotation = result["choices"][0]["message"]["content"].strip()
-            return annotation
-
-    except Exception as e:
-        logger.warning(f"  LLM annotation failed for {gene_name}: {e}")
-        return f"[Annotation unavailable — API error: {type(e).__name__}]"
+    logger.warning(f"  LLM annotation failed for {gene_name}: {last_err}")
+    return f"[Annotation unavailable — API error: {type(last_err).__name__}]"
 
 
 def annotate_biomarkers(

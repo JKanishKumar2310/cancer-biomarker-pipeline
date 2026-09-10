@@ -8,6 +8,7 @@ import os
 import sys
 import gzip
 import json
+import re
 import urllib.request
 import pandas as pd
 
@@ -88,25 +89,49 @@ def fetch_geo_metadata(accession: str) -> dict:
     }
 
 
-def curate_with_llm(accession: str, series_title: str, samples_subset: dict, api_key: str) -> dict | None:
-    """Query OpenRouter LLM to identify Tumor vs Normal samples."""
+def extract_sample_templates(samples: dict) -> dict:
+    """
+    Group samples into distinct naming templates by replacing digit sequences with '#'.
+    This collapses hundreds of repetitive sample titles into 2-5 distinct templates.
+    """
+    templates = {}
+    for s_id, data in samples.items():
+        title = data["title"].strip()
+        tmpl = re.sub(r"\d+", "#", title)
+        if tmpl not in templates:
+            templates[tmpl] = {
+                "count": 0,
+                "example_title": title,
+                "chars": data.get("characteristics", [])[:3],
+                "sample_ids": [],
+            }
+        templates[tmpl]["count"] += 1
+        templates[tmpl]["sample_ids"].append(s_id)
+    return templates
+
+
+def curate_with_llm(accession: str, series_title: str, samples: dict, api_key: str) -> dict | None:
+    """Query OpenRouter LLM to classify sample templates into Tumor vs Normal."""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    # Prompt with sample preview
-    sample_preview = {s_id: data["title"] + " | " + " ".join(data["characteristics"][:2]) for s_id, data in list(samples_subset.items())[:20]}
+    templates = extract_sample_templates(samples)
+    template_preview = {
+        tmpl: f"{info['example_title']} | {' '.join(info['chars'])}"
+        for tmpl, info in templates.items()
+    }
 
     prompt = (
         f"You are an expert bioinformatician. Study GEO accession: {accession} ('{series_title}').\n"
-        f"Here is a sample of descriptions:\n{json.dumps(sample_preview, indent=2)}\n\n"
+        f"The cohort samples group into the following distinct title/metadata templates:\n"
+        f"{json.dumps(template_preview, indent=2)}\n\n"
         "Return a JSON object with:\n"
-        "1. 'cancer_type': Detected cancer or disease type name.\n"
-        "2. 'tumor_keywords': List of substrings that indicate Tumor/Case.\n"
-        "3. 'normal_keywords': List of substrings that indicate Normal/Control.\n"
-        "4. 'rationale': One sentence explaining how you distinguished Tumor vs Normal."
+        "1. 'cancer_type': Detected cancer or disease type name (e.g. 'Colorectal Adenoma', 'Non-Small Cell Lung Cancer', 'Breast Carcinoma').\n"
+        "2. 'template_labels': A JSON dictionary mapping EVERY template key EXACTLY to 'Tumor' or 'Normal' or 'Exclude'.\n"
+        "3. 'rationale': One sentence explaining how you distinguished Tumor vs Normal groups."
     )
 
     payload = {
@@ -115,15 +140,38 @@ def curate_with_llm(accession: str, series_title: str, samples_subset: dict, api
         "response_format": {"type": "json_object"},
     }
 
-    try:
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            return json.loads(content)
-    except Exception as e:
-        logger.warning(f"LLM curation query failed: {e}. Falling back to semantic parser.")
-        return None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                content = data["choices"][0]["message"]["content"]
+                return json.loads(content)
+        except Exception as e:
+            if attempt == 0:
+                continue
+            logger.warning(f"LLM curation query failed: {e}. Falling back to semantic parser.")
+            return None
+
+
+def _matches_term(term: str, text: str) -> bool:
+    """Safely match a keyword or phrase against text, avoiding substring false positives."""
+    term = term.strip().lower()
+    text = text.lower()
+    if not term or not text:
+        return False
+    # If term is 1-2 characters (e.g. 't', 'n', 'hc'), require boundary or numeric prefix (e.g., '2t', '165n')
+    if len(term) <= 2:
+        return bool(re.search(r'(?:\b|\d)' + re.escape(term) + r'\b', text))
+    # If it's a multi-word phrase, check substring in text
+    if " " in term:
+        return term in text
+    # Standard word boundary for single words >= 3 chars
+    return bool(re.search(r'\b' + re.escape(term) + r'\b', text))
+
+
+def _matches_any_term(terms: list, text: str) -> bool:
+    return any(_matches_term(t, text) for t in terms if t)
 
 
 def curate_dataset(accession: str) -> dict:
@@ -140,30 +188,67 @@ def curate_dataset(accession: str) -> dict:
     if api_key:
         llm_info = curate_with_llm(accession, meta["series_title"], samples, api_key)
 
-    tumor_words = ["tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm"]
-    normal_words = ["normal", "healthy", "adjacent", "control", "non-tumor", "mucosa"]
-
     cancer_type = meta["series_title"] or f"Cancer Cohort ({accession})"
     rationale = "Classified using semantic biomedical ontology matching."
 
     if llm_info:
-        cancer_type = llm_info.get("cancer_type", cancer_type)
-        tumor_words = list(set(tumor_words + [w.lower() for w in llm_info.get("tumor_keywords", [])]))
-        normal_words = list(set(normal_words + [w.lower() for w in llm_info.get("normal_keywords", [])]))
+        raw_ct = llm_info.get("cancer_type", cancer_type)
+        if isinstance(raw_ct, dict):
+            cancer_type = ", ".join([k for k in raw_ct.keys() if "normal" not in k.lower() and "control" not in k.lower()])
+        elif isinstance(raw_ct, list):
+            cancer_type = ", ".join([str(x) for x in raw_ct])
+        elif isinstance(raw_ct, str):
+            cancer_type = raw_ct
         rationale = f"AI curation ({llm_info.get('rationale', '')})"
 
-    # Classify each sample
+    # Step 1: Assign via LLM template-level classification
     labels = {}
-    for s_id, data in samples.items():
-        title = data["title"].lower()
-        chars = " ".join([c.lower() for c in data["characteristics"]])
+    templates = extract_sample_templates(samples)
+    template_labels = llm_info.get("template_labels", {}) if llm_info else {}
 
-        if any(w in title for w in normal_words) or any(w in chars for w in ["tissue: normal", "type: normal", "normal"]):
-            labels[s_id] = "Normal"
-        elif any(w in title for w in tumor_words) or any(w in chars for w in ["tissue: tumor", "tissue: adenoma", "tumor", "adenoma"]):
-            labels[s_id] = "Tumor"
-        else:
-            labels[s_id] = "Unknown"
+    if template_labels:
+        for tmpl, info in templates.items():
+            assigned = template_labels.get(tmpl)
+            if assigned in ("Tumor", "Normal"):
+                for s_id in info["sample_ids"]:
+                    labels[s_id] = assigned
+
+    # Step 2: Fallback for any unassigned samples (or if LLM unavailable)
+    unassigned = [s_id for s_id in samples if s_id not in labels]
+    if unassigned:
+        tumor_words = [
+            "tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm",
+            "crc", "gbm", "nsclc", "sclc", "luad", "lusc", "brca", "panc", "chol", "prad", "kirc",
+            "glioma", "melanoma", "sarcoma",
+        ]
+        normal_words = [
+            "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "mucosa",
+            "donor", "healthy control", "normal mucosa", "paired normal",
+        ]
+        for s_id in unassigned:
+            data = samples[s_id]
+            title = data["title"]
+            chars = " ".join(data["characteristics"])
+            full_text = f"{title} {chars}"
+
+            is_normal = _matches_any_term(normal_words, full_text)
+            is_tumor = _matches_any_term(tumor_words, full_text)
+
+            if is_tumor and not is_normal:
+                labels[s_id] = "Tumor"
+            elif is_normal and not is_tumor:
+                labels[s_id] = "Normal"
+            elif is_tumor and is_normal:
+                title_tumor = _matches_any_term(tumor_words, title)
+                title_normal = _matches_any_term(normal_words, title)
+                if title_tumor and not title_normal:
+                    labels[s_id] = "Tumor"
+                elif title_normal and not title_tumor:
+                    labels[s_id] = "Normal"
+                else:
+                    labels[s_id] = "Normal" if "normal" in full_text.lower() else "Tumor"
+            else:
+                labels[s_id] = "Unknown"
 
     counts = pd.Series(labels).value_counts().to_dict()
     n_tumor = counts.get("Tumor", 0)
@@ -172,10 +257,52 @@ def curate_dataset(accession: str) -> dict:
     if n_tumor == 0 or n_normal == 0:
         return {
             "success": False,
-            "error": f"Failed to detect comparative groups. Found: {counts}. Study may lack healthy controls.",
+            "error": f"Failed to detect comparative groups. Found: {counts}. Study may lack healthy controls or use unstandardized clinical codes.",
             "accession": accession,
             "counts": counts,
         }
+
+    # Verify that the downloaded series matrix actually contains gene expression rows
+    # (High-throughput RNA-seq series matrices like GSE68086 often omit the data table)
+    has_expression_data = False
+    try:
+        with gzip.open(meta["local_path"], "rt", encoding="utf-8", errors="ignore") as f:
+            in_table = False
+            row_count = 0
+            for line in f:
+                if line.startswith("!series_matrix_table_begin"):
+                    in_table = True
+                    continue
+                if in_table:
+                    if line.startswith("!series_matrix_table_end"):
+                        break
+                    row_count += 1
+                    if row_count > 5:
+                        has_expression_data = True
+                        break
+    except Exception:
+        has_expression_data = True
+
+    if not has_expression_data:
+        return {
+            "success": False,
+            "error": f"Identified {n_tumor} Tumor vs {n_normal} Normal (Healthy Controls), but {accession} is an RNA-seq study whose expression matrix was published as an external supplementary tarball rather than an embedded series matrix table. Please use standard cohorts with embedded matrices (e.g., GSE8671, GSE19804, GSE15852).",
+            "accession": accession,
+            "counts": counts,
+        }
+
+    # ── Write back to config so the entire downstream pipeline is aware ────
+    config.GEO_ACCESSION = accession
+    config.CANCER_TYPE = cancer_type
+    logger.info(f"  config.GEO_ACCESSION → {accession}")
+    logger.info(f"  config.CANCER_TYPE   → {cancer_type}")
+
+    # ── Fetch cancer-specific known markers via AI ───────────────────────
+    try:
+        from src.ai_annotator import update_known_markers_for_cancer
+        update_known_markers_for_cancer(cancer_type)
+    except Exception as e:
+        logger.warning(f"  Could not fetch AI markers: {e} — keeping existing KNOWN_MARKERS")
 
     return {
         "success": True,
@@ -188,6 +315,7 @@ def curate_dataset(accession: str) -> dict:
         "rationale": rationale,
         "counts": counts,
     }
+
 
 
 if __name__ == "__main__":

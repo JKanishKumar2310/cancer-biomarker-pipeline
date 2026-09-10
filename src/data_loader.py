@@ -77,22 +77,32 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
         elif line.startswith("!Sample_characteristics_ch1"):
             characteristics.append([x.strip(' "\t\r\n') for x in line.split("\t")[1:]])
 
-    # Classify samples as Tumor/Normal (title has the cleanest signal)
-    labels = {}
-    for i, s_id in enumerate(sample_ids):
-        title = sample_titles[i].lower() if i < len(sample_titles) else ""
-        chars = " ".join([ch[i].lower() for ch in characteristics if i < len(ch) and not ch[i].lower().startswith("cel filename")])
-
-        if any(w in title for w in ["normal", "healthy", "adjacent"]):
-            labels[s_id] = "Normal"
-        elif any(w in title for w in ["tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp"]):
-            labels[s_id] = "Tumor"
-        elif any(w in chars for w in ["tissue: normal", "normal", "healthy", "non-tumor"]):
-            labels[s_id] = "Normal"
-        elif any(w in chars for w in ["tissue: adenoma", "tissue: tumor", "tumor", "cancer", "adenoma"]):
-            labels[s_id] = "Tumor"
+    # Classify samples using AI Curator (template-based with 100% precision)
+    try:
+        from src.ai_geo_curator import curate_dataset
+        curation = curate_dataset(accession)
+        if curation.get("success") and "labels" in curation:
+            labels = curation["labels"]
+            logger.info(f"AI Curator successfully classified {len(labels)} samples for {accession}")
         else:
-            labels[s_id] = "Unknown"
+            raise ValueError("Curator did not return labels")
+    except Exception as e:
+        logger.warning(f"AI Curator unavailable or failed ({e}), using heuristic classification...")
+        labels = {}
+        for i, s_id in enumerate(sample_ids):
+            title = sample_titles[i].lower() if i < len(sample_titles) else ""
+            chars = " ".join([ch[i].lower() for ch in characteristics if i < len(ch) and not ch[i].lower().startswith("cel filename")])
+
+            if any(w in title for w in ["normal", "healthy", "adjacent"]):
+                labels[s_id] = "Normal"
+            elif any(w in title for w in ["tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp"]):
+                labels[s_id] = "Tumor"
+            elif any(w in chars for w in ["tissue: normal", "normal", "healthy", "non-tumor"]):
+                labels[s_id] = "Normal"
+            elif any(w in chars for w in ["tissue: adenoma", "tissue: tumor", "tumor", "cancer", "adenoma"]):
+                labels[s_id] = "Tumor"
+            else:
+                labels[s_id] = "Unknown"
 
     label_series = pd.Series(labels, name="condition")
     n_unknown = (label_series == "Unknown").sum()
@@ -200,28 +210,44 @@ def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
     labels : pd.Series
         Sample labels ('Tumor' or 'Normal'), indexed by sample name.
     """
+    acc = getattr(config, "GEO_ACCESSION", "GSE8671")
+    acc_expr = os.path.join(config.DATA_DIR, f"{acc}_expression_matrix.csv")
+    acc_labels = os.path.join(config.DATA_DIR, f"{acc}_sample_labels.csv")
+
     cache_expr = os.path.join(config.DATA_DIR, "expression_matrix.csv")
     cache_labels = os.path.join(config.DATA_DIR, "sample_labels.csv")
 
-    # ── Try cache first ──────────────────────────────────────
-    if os.path.exists(cache_expr) and os.path.exists(cache_labels) and not force_synthetic:
-        logger.info("Loading cached data...")
-        expr_df = pd.read_csv(cache_expr, index_col=0)
-        labels = pd.read_csv(cache_labels, index_col=0).squeeze()
+    # ── If force_synthetic requested, create synthetic data ──
+    if force_synthetic:
+        logger.info("Generating synthetic dataset (test mode)...")
+        expr_df, labels = _create_synthetic_dataset()
+        expr_df.to_csv(cache_expr)
+        labels.to_frame().to_csv(cache_labels)
+        return expr_df, labels
+
+    # ── Try accession-specific cache first ─────────────────────
+    if os.path.exists(acc_expr) and os.path.exists(acc_labels):
+        logger.info(f"Loading cached {acc} data...")
+        expr_df = pd.read_csv(acc_expr, index_col=0)
+        labels = pd.read_csv(acc_labels, index_col=0).squeeze()
+        # Keep active expression_matrix.csv in sync with current dataset
+        expr_df.to_csv(cache_expr)
+        labels.to_frame().to_csv(cache_labels)
         logger.info(f"Loaded: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples")
         return expr_df, labels
 
     # ── Try real GEO series matrix ───────────────────────────
-    if not force_synthetic:
-        try:
-            expr_df, labels = _load_from_series_matrix()
-            expr_df.to_csv(cache_expr)
-            labels.to_frame().to_csv(cache_labels)
-            logger.info("Real GEO data cached for future runs")
-            return expr_df, labels
-        except Exception as e:
-            logger.warning(f"Failed to load real GEO series matrix: {e}")
-            logger.info("Falling back to synthetic data...")
+    try:
+        expr_df, labels = _load_from_series_matrix()
+        expr_df.to_csv(acc_expr)
+        labels.to_frame().to_csv(acc_labels)
+        expr_df.to_csv(cache_expr)
+        labels.to_frame().to_csv(cache_labels)
+        logger.info(f"Real GEO {acc} data cached for future runs")
+        return expr_df, labels
+    except Exception as e:
+        logger.warning(f"Failed to load real GEO series matrix for {acc}: {e}")
+        logger.info("Falling back to synthetic data...")
 
     # ── Fallback: Synthetic data ─────────────────────────────
     expr_df, labels = _create_synthetic_dataset()

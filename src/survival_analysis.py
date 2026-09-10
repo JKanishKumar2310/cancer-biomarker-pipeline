@@ -34,31 +34,57 @@ def _create_synthetic_survival_cohort() -> tuple[pd.DataFrame, pd.DataFrame]:
 def load_survival_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Load clinical survival cohort matching current cancer type.
-    GSE31210 for Lung Cancer (n=226), GSE1456 for Breast Cancer (n=159).
+    Dynamically resolves cohort from config.SURVIVAL_COHORT or cancer type.
     """
     if force_synthetic:
         logger.info("Using synthetic survival cohort (test mode)...")
         return _create_synthetic_survival_cohort()
 
-    if getattr(config, "GEO_ACCESSION", "") in ["GSE19804", "GSE8671"]:
-        expr_cache = os.path.join(config.DATA_DIR, "GSE31210_expression.csv")
-        clin_cache = os.path.join(config.DATA_DIR, "GSE31210_clinical.csv")
-        cohort_name = "GSE31210 Clinical Survival Cohort (n=226, 10-year follow-up)"
-    else:
-        expr_cache = os.path.join(config.DATA_DIR, "GSE1456_expression.csv")
-        clin_cache = os.path.join(config.DATA_DIR, "GSE1456_clinical.csv")
-        cohort_name = "GSE1456 Stockholm Breast Cancer (n=159, 10-year follow-up)"
+    surv_info = getattr(config, "SURVIVAL_COHORT", None)
+    target_acc = surv_info.get("accession") if isinstance(surv_info, dict) else None
 
+    if not target_acc:
+        ct = getattr(config, "CANCER_TYPE", "").lower()
+        if "lung" in ct or "nsclc" in ct or getattr(config, "GEO_ACCESSION", "") == "GSE19804":
+            target_acc = "GSE31210"
+            cohort_name = "GSE31210 Clinical Survival Cohort (NSCLC, n=226)"
+        elif "breast" in ct or getattr(config, "GEO_ACCESSION", "") == "GSE15852":
+            target_acc = "GSE1456"
+            cohort_name = "GSE1456 Stockholm Breast Cancer (n=159)"
+        else:
+            target_acc = "GSE31210"
+            cohort_name = "GSE31210 Clinical Survival Cohort (n=226)"
+    else:
+        cohort_name = surv_info.get("label", f"{target_acc} Survival Cohort")
+
+    expr_cache = os.path.join(config.DATA_DIR, f"{target_acc}_expression.csv")
+    clin_cache = os.path.join(config.DATA_DIR, f"{target_acc}_clinical.csv")
+
+    # If requested cohort is cached, load it
     if os.path.exists(expr_cache) and os.path.exists(clin_cache):
         logger.info(f"Loading cached {cohort_name}...")
         expr_df = pd.read_csv(expr_cache, index_col=0)
         clinical_df = pd.read_csv(clin_cache, index_col=0)
         return expr_df, clinical_df
 
-    # If cohort cache is missing, fallback to synthetic cohort for clean environments / CI
-    if not (os.path.exists(expr_cache) and os.path.exists(clin_cache)):
-        logger.warning(f"Survival cohort cache not found at {expr_cache}. Falling back to test survival cohort.")
-        return _create_synthetic_survival_cohort()
+    # Check alternative cached cohorts in data/
+    for alt_acc, alt_name in [("GSE31210", "GSE31210 Survival Cohort (n=226)"), ("GSE1456", "GSE1456 Survival Cohort (n=159)")]:
+        alt_expr = os.path.join(config.DATA_DIR, f"{alt_acc}_expression.csv")
+        alt_clin = os.path.join(config.DATA_DIR, f"{alt_acc}_clinical.csv")
+        if os.path.exists(alt_expr) and os.path.exists(alt_clin):
+            logger.info(f"Survival cohort '{target_acc}' cache not found. Using available {alt_name}...")
+            if not surv_info or surv_info.get("accession") != alt_acc:
+                config.SURVIVAL_COHORT = {
+                    "accession": alt_acc,
+                    "n": 226 if alt_acc == "GSE31210" else 159,
+                    "endpoint": "Overall Survival",
+                    "label": alt_name,
+                }
+            return pd.read_csv(alt_expr, index_col=0), pd.read_csv(alt_clin, index_col=0)
+
+    # Fallback to synthetic if no local cohort cached
+    logger.warning(f"No local survival cohorts found. Falling back to synthetic test survival cohort.")
+    return _create_synthetic_survival_cohort()
 
     # Below: GSE1456 breast cancer parsing (only runs for breast config)
     matrix_file = os.path.join(config.DATA_DIR, "GSE1456-GPL96_series_matrix.txt.gz")

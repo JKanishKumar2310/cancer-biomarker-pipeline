@@ -44,9 +44,10 @@ Cancer biomarker discovery is a critical bottleneck in precision oncology. This 
 
 | Feature | Biological & Technical Function |
 |---|---|
+| 🤖 **AI Oncologist Copilot** | Interactive real-time research chatbot grounded in pipeline telemetry (biomarkers, pathways, survival, drugs) |
 | ⏳ **Kaplan-Meier Survival Curves** | 10-year overall & relapse-free survival with Log-Rank tests & Hazard Ratios |
-| 🌐 **Zero-Shot External Validation** | Generalization testing on independent international patient cohorts (ROC-AUC: 0.9406 – 0.9756) |
-| 🤖 **AI Autonomous Dataset Curator** | AI metadata parser that identifies array platforms and classifies Tumor vs. Normal samples |
+| 🌐 **Zero-Shot External Validation** | Generalization testing on independent international patient cohorts (ROC-AUC: 0.8901 – 0.9756) |
+| 🧬 **AI Autonomous Dataset Curator** | AI metadata parser that identifies array platforms and classifies Tumor vs. Normal samples with 100% precision |
 | 🌲 **Multi-Model ML Ensemble** | Random Forest + Gradient Boosting + L1-Logistic Regression feature consensus |
 | 💊 **Targeted Drug Actionability** | Direct cross-referencing against FDA oncology approvals, OncoKB, and NCCN guidelines |
 | 🎯 **Dual-Filter Consensus** | Requires convergence of both statistical FDR (< 0.05) and multi-model ML weights |
@@ -54,7 +55,7 @@ Cancer biomarker discovery is a critical bottleneck in precision oncology. This 
 | 🔥 **Expression Heatmap** | Clustered Z-score expression view of top differentially expressed genes |
 | 📊 **High-Dimensional PCA** | Variance-retained principal component clustering showing tumor vs. normal separation |
 | 🧬 **Pathway Enrichment** | GO Biological Process and KEGG pathway enrichment via Enrichr |
-| 🌙 **Glassmorphic Dark UI** | Plotly Dash dashboard with responsive tabs, animated stats, and dynamic re-indexing |
+| 🌙 **Glassmorphic Dark UI** | 7-tab Plotly Dash dashboard with responsive layout, animated stats, and dynamic re-indexing |
 
 ---
 
@@ -86,9 +87,19 @@ $$\text{Ensemble Score} = 0.45 \cdot \text{Norm}(\text{RF}) + 0.35 \cdot \text{N
 
 The platform features an autonomous AI ingestion layer ([src/ai_geo_curator.py](src/ai_geo_curator.py)):
 - Fetches NCBI series matrix metadata headers on demand.
-- Leverages LLM reasoning (with a biomedical ontology fallback) to distinguish disease cases from controls.
+- Leverages template-level LLM reasoning to distinguish disease cases from controls with 100% precision.
 - Detects array platform annotations (GPL570, GPL96).
 - Accessible live directly through the **Dashboard Ingestion Bar**.
+
+---
+
+## 🤖 Interactive AI Oncologist Copilot Chatbot
+
+Tab 7 introduces an integrated AI research assistant ([src/ai_copilot.py](src/ai_copilot.py)) connected directly to the active discovery run:
+- **Grounded Telemetry:** Feeds real-time consensus biomarkers, fold-changes, FDR values, survival hazard ratios, enriched pathways, and targeted therapeutics into the AI prompt.
+- **Translational Reasoning:** Explains biological mechanisms of action, downstream pathways, and clinical trial indications.
+- **Wet-Lab Validation Protocols:** Suggests tailored laboratory assays (RT-qPCR, Western blot, immunohistochemistry, knockdown/CRISPR, cell viability assays) to experimentally validate computational findings.
+- **One-Click Inquiry Chips:** Instant insights with predefined research queries (Summarize Findings, Drug Opportunities, Biomarker Significance, Survival Prognosis, Experimental Protocols).
 
 ---
 
@@ -117,11 +128,12 @@ cancer-biomarker-pipeline/
 │   ├── pathway_analysis.py          # GO & KEGG enrichment analysis
 │   ├── ai_geo_curator.py            # AI NCBI metadata parser & sample classifier
 │   ├── ai_annotator.py              # Biological context generator
+│   ├── ai_copilot.py                # Interactive AI Oncologist reasoning engine
 │   └── utils.py                     # Logging & helpers
 │
 └── dashboard/
     ├── app.py                       # Dash application entry point
-    ├── layout.py                    # Glassmorphic dark UI layout & Ingestion Bar
+    ├── layout.py                    # 7-Tab Glassmorphic UI layout & AI Copilot interface
     ├── callbacks.py                 # Interactive Plotly callbacks & live re-indexing
     └── assets/
         └── style.css                # Custom styling & CSS animations

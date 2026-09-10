@@ -26,7 +26,7 @@ from src.preprocessing import preprocess
 from src.differential_expression import run_differential_expression, get_top_degs
 from src.ml_biomarkers import run_ml_biomarker_ranking
 from src.pathway_analysis import run_enrichment
-from src.ai_annotator import annotate_biomarkers, generate_summary_report
+from src.ai_annotator import annotate_biomarkers, generate_summary_report, fetch_cohorts_for_cancer
 from src.survival_analysis import run_survival_pipeline
 from src.external_validation import run_external_validation
 from src.drug_mapping import map_biomarkers_to_drugs
@@ -75,15 +75,22 @@ def main(force_synthetic: bool = False):
     enrichment = run_enrichment(enrichment_genes)
     logger.info("")
 
+    # ── Step 6 & 7: AI selects survival + validation cohorts ────────────────
+    cohorts = fetch_cohorts_for_cancer(config.CANCER_TYPE)
+    surv_info = cohorts["survival"]
+    val_info  = cohorts["validation"]
+
+    # Store on config so survival_analysis.py and external_validation.py can read them
+    config.SURVIVAL_COHORT   = surv_info
+    config.VALIDATION_COHORT = val_info
+
     # ── Step 6: Clinical Survival Analysis ───────────────────
-    surv_label = "GSE31210, n=226" if config.GEO_ACCESSION in ["GSE19804", "GSE8671"] else "GSE1456, n=159"
-    logger.info(f"STEP 6/8: Clinical survival analysis ({surv_label})...")
+    logger.info(f"STEP 6/8: Clinical survival analysis ({surv_info['label']})...")
     survival_df = run_survival_pipeline(force_synthetic=force_synthetic)
     logger.info("")
 
     # ── Step 7: Cross-Cohort External Validation ─────────────
-    ext_label = "GSE18842, n=91" if config.GEO_ACCESSION in ["GSE19804", "GSE8671"] else "GSE42568, n=121"
-    logger.info(f"STEP 7/8: Cross-cohort external validation ({ext_label})...")
+    logger.info(f"STEP 7/8: Cross-cohort external validation ({val_info['label']})...")
     ext_val = run_external_validation(force_synthetic=force_synthetic)
     logger.info("")
 

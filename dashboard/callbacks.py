@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback, html, no_update, ctx
+from dash import Input, Output, State, callback, html, dcc, no_update, ctx
 import dash_bootstrap_components as dbc
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -83,13 +83,14 @@ def register_callbacks(app):
         n_consensus = len(consensus) if len(consensus) > 0 else 0
         n_samples = expr.shape[1] if len(expr) > 0 else 0
 
-        return [
+        cards = [
             make_stat_card(f"{total_genes:,}", "Total Genes", "cyan", 1),
             make_stat_card(n_up, "Upregulated", "green", 2),
             make_stat_card(n_down, "Downregulated", "pink", 3),
             make_stat_card(n_consensus, "Consensus Biomarkers", "purple", 4),
             make_stat_card(n_samples, "Samples", "orange", 5),
         ]
+        return html.Div(cards, style={"display": "contents"})
 
     # ── PCA Plot ─────────────────────────────────────────────
     @app.callback(
@@ -503,159 +504,160 @@ def register_callbacks(app):
 
         go_fig = make_enrichment_fig(go_data, CYAN, "GO")
         kegg_fig = make_enrichment_fig(kegg_data, PURPLE, "KEGG")
+        return go_fig, kegg_fig
 
-        # ── Tab 6: Clinical Survival & Drugs Callbacks ──────
-        @app.callback(
-            [
-                Output("kaplan-meier-plot", "figure"),
-                Output("drug-actionability-content", "children"),
-            ],
-            [
-                Input("survival-gene-dropdown", "value"),
-                Input("survival-endpoint-radio", "value"),
-            ],
-        )
-        def update_survival_and_drugs(gene, endpoint):
-            from src.survival_analysis import evaluate_biomarker_survival
-            from src.drug_mapping import get_drug_details_for_gene
+    # ── Tab 6: Clinical Survival & Drugs Callbacks ──────
+    @app.callback(
+        [
+            Output("kaplan-meier-plot", "figure"),
+            Output("drug-actionability-content", "children"),
+        ],
+        [
+            Input("survival-gene-dropdown", "value"),
+            Input("survival-endpoint-radio", "value"),
+        ],
+    )
+    def update_survival_and_drugs(gene, endpoint):
+        from src.survival_analysis import evaluate_biomarker_survival
+        from src.drug_mapping import get_drug_details_for_gene
 
-            if not gene:
-                return _empty_figure("Select a biomarker"), html.Div("No gene selected")
+        if not gene:
+            return _empty_figure("Select a biomarker"), html.Div("No gene selected")
 
-            # 1. Kaplan-Meier Curve
-            res = evaluate_biomarker_survival(gene, outcome=endpoint)
-            if "error" in res:
-                km_fig = _empty_figure(res["error"])
-            else:
-                km_fig = go.Figure()
-                # High Expression Step Curve
-                km_fig.add_trace(go.Scatter(
-                    x=res["km_high"]["timeline"],
-                    y=res["km_high"]["survival"],
-                    mode="lines",
-                    line=dict(color=PINK, width=2.5, shape="hv"),
-                    name=f"High {gene} (n={res['n_high']})",
-                    hovertemplate="Time: %{x:.1f} yrs<br>Survival: %{y:.1%}<extra></extra>",
-                ))
-                # Low Expression Step Curve
-                km_fig.add_trace(go.Scatter(
-                    x=res["km_low"]["timeline"],
-                    y=res["km_low"]["survival"],
-                    mode="lines",
-                    line=dict(color=CYAN, width=2.5, shape="hv"),
-                    name=f"Low {gene} (n={res['n_low']})",
-                    hovertemplate="Time: %{x:.1f} yrs<br>Survival: %{y:.1%}<extra></extra>",
-                ))
-
-                endpoint_title = "Overall Survival (OS)" if endpoint == "overall" else "Relapse-Free Survival (RFS)"
-                km_fig.update_layout(
-                    **PLOT_LAYOUT_DEFAULTS,
-                    title=dict(
-                        text=f"<b>{gene}</b> — {endpoint_title}<br><sup>Log-Rank p = {res['p_value']:.2e} | Hazard Ratio (HR) = {res['hazard_ratio']:.2f} | Cutoff: {res['median_cutoff']:.2f}</sup>",
-                        font=dict(size=13, color=FONT_COLOR),
-                    ),
-                    xaxis_title="Time (Years)",
-                    yaxis_title="Probability of Survival",
-                    yaxis=dict(range=[0, 1.05], tickformat=".0%", gridcolor=GRID_COLOR),
-                    xaxis=dict(gridcolor=GRID_COLOR),
-                    height=420,
-                    legend=dict(x=0.02, y=0.05, bgcolor="rgba(10,10,26,0.6)"),
-                )
-
-            # 2. Targeted Drug Card
-            drug_info = get_drug_details_for_gene(gene)
-            if drug_info:
-                drug_card = html.Div(
-                    className="biomarker-card",
-                    children=[
-                        html.Div(
-                            className="d-flex justify-content-between align-items-center mb-2",
-                            children=[
-                                html.H4(f"🎯 {gene}", className="m-0 text-info"),
-                                dbc.Badge(drug_info["evidence_tier"].split(":")[0], color="success", className="p-2"),
-                            ],
-                        ),
-                        html.P(html.B(drug_info["gene_name"]), className="text-light mb-2"),
-                        html.Div(className="divider-line my-2"),
-                        html.P([html.B("Approved Drugs: "), html.Span(drug_info["approved_drugs"], className="text-warning")]),
-                        html.P([html.B("Drug Class: "), html.Span(drug_info["drug_class"])]),
-                        html.P([html.B("Mechanism: "), html.Span(drug_info["mechanism"])]),
-                        html.P([html.B("Clinical Indication: "), html.Span(drug_info["indication"], className="text-muted")]),
-                        html.Div(className="divider-line my-2"),
-                        html.P([html.B("Actionability: "), html.Span(drug_info["clinical_action"], className="text-info")]),
-                    ],
-                )
-            else:
-                drug_card = html.Div(
-                    className="biomarker-card text-center p-4",
-                    children=[
-                        html.H5(f"ℹ️ {gene}", className="text-muted"),
-                        html.P("No direct FDA-approved targeted drug currently mapped for this gene.", className="text-muted"),
-                        html.P("Explore clinical trials or upstream kinase pathway inhibitors.", className="small text-info"),
-                    ],
-                )
-
-            return km_fig, drug_card
-
-        @app.callback(
-            [
-                Output("external-roc-plot", "figure"),
-                Output("external-metrics-content", "children"),
-            ],
-            [Input("main-tabs", "active_tab")],
-        )
-        def update_external_validation(active_tab):
-            ext_m = RESULTS.get("ext_metrics", pd.DataFrame())
-            ext_r = RESULTS.get("ext_roc", pd.DataFrame())
-
-            if len(ext_r) == 0 or len(ext_m) == 0:
-                return _empty_figure("External validation results not loaded"), html.Div("Metrics unavailable")
-
-            # ROC Curve
-            roc_fig = go.Figure()
-            roc_fig.add_trace(go.Scatter(
-                x=ext_r["fpr"],
-                y=ext_r["tpr"],
+        # 1. Kaplan-Meier Curve
+        res = evaluate_biomarker_survival(gene, outcome=endpoint)
+        if "error" in res:
+            km_fig = _empty_figure(res["error"])
+        else:
+            km_fig = go.Figure()
+            # High Expression Step Curve
+            km_fig.add_trace(go.Scatter(
+                x=res["km_high"]["timeline"],
+                y=res["km_high"]["survival"],
                 mode="lines",
-                line=dict(color=GREEN, width=3),
-                name=f"ROC (AUC = {ext_m['roc_auc'].iloc[0]:.4f})",
-                hovertemplate="FPR: %{x:.3f}<br>TPR: %{y:.3f}<extra></extra>",
+                line=dict(color=PINK, width=2.5, shape="hv"),
+                name=f"High {gene} (n={res['n_high']})",
+                hovertemplate="Time: %{x:.1f} yrs<br>Survival: %{y:.1%}<extra></extra>",
             ))
-            # Diagonal chance line
-            roc_fig.add_trace(go.Scatter(
-                x=[0, 1], y=[0, 1],
+            # Low Expression Step Curve
+            km_fig.add_trace(go.Scatter(
+                x=res["km_low"]["timeline"],
+                y=res["km_low"]["survival"],
                 mode="lines",
-                line=dict(color="rgba(255,255,255,0.3)", dash="dash"),
-                name="Chance (AUC = 0.50)",
+                line=dict(color=CYAN, width=2.5, shape="hv"),
+                name=f"Low {gene} (n={res['n_low']})",
+                hovertemplate="Time: %{x:.1f} yrs<br>Survival: %{y:.1%}<extra></extra>",
             ))
-            roc_fig.update_layout(
+
+            endpoint_title = "Overall Survival (OS)" if endpoint == "overall" else "Relapse-Free Survival (RFS)"
+            km_fig.update_layout(
                 **PLOT_LAYOUT_DEFAULTS,
                 title=dict(
-                    text=f"<b>Cross-Cohort ROC Curve</b> (AUC = {ext_m['roc_auc'].iloc[0]:.4f})<br><sup>Trained: GSE15852 (Malaysia) | Tested: GSE42568 (Europe)</sup>",
-                    font=dict(size=12, color=FONT_COLOR),
+                    text=f"<b>{gene}</b> — {endpoint_title}<br><sup>Log-Rank p = {res['p_value']:.2e} | Hazard Ratio (HR) = {res['hazard_ratio']:.2f} | Cutoff: {res['median_cutoff']:.2f}</sup>",
+                    font=dict(size=13, color=FONT_COLOR),
                 ),
-                xaxis_title="False Positive Rate (1 - Specificity)",
-                yaxis_title="True Positive Rate (Sensitivity)",
-                xaxis=dict(range=[-0.02, 1.02], gridcolor=GRID_COLOR),
-                yaxis=dict(range=[-0.02, 1.02], gridcolor=GRID_COLOR),
-                height=350,
-                legend=dict(x=0.55, y=0.15, bgcolor="rgba(10,10,26,0.6)"),
+                xaxis_title="Time (Years)",
+                yaxis_title="Probability of Survival",
+                yaxis=dict(range=[0, 1.05], tickformat=".0%", gridcolor=GRID_COLOR),
+                xaxis=dict(gridcolor=GRID_COLOR),
+                height=420,
+                legend=dict(x=0.02, y=0.05, bgcolor="rgba(10,10,26,0.6)"),
             )
 
-            # Metrics cards
-            m = ext_m.iloc[0]
-            metrics_content = html.Div(
-                className="stats-row",
-                style={"gridTemplateColumns": "repeat(2, 1fr)", "gap": "12px", "marginTop": "10px"},
+        # 2. Targeted Drug Card
+        drug_info = get_drug_details_for_gene(gene)
+        if drug_info:
+            drug_card = html.Div(
+                className="biomarker-card",
                 children=[
-                    make_stat_card(f"{m['test_accuracy']*100:.1f}%", "External Test Accuracy", "accent-cyan", 0),
-                    make_stat_card(f"{m['roc_auc']:.4f}", "Cross-Cohort ROC-AUC", "accent-green", 1),
-                    make_stat_card(f"{m['sensitivity']*100:.1f}%", "Sensitivity (Tumor Recall)", "accent-pink", 2),
-                    make_stat_card(f"{m['specificity']*100:.1f}%", "Specificity (Normal Rule-Out)", "accent-purple", 3),
+                    html.Div(
+                        className="d-flex justify-content-between align-items-center mb-2",
+                        children=[
+                            html.H4(f"🎯 {gene}", className="m-0 text-info"),
+                            dbc.Badge(drug_info["evidence_tier"].split(":")[0], color="success", className="p-2"),
+                        ],
+                    ),
+                    html.P(html.B(drug_info["gene_name"]), className="text-light mb-2"),
+                    html.Div(className="divider-line my-2"),
+                    html.P([html.B("Approved Drugs: "), html.Span(drug_info["approved_drugs"], className="text-warning")]),
+                    html.P([html.B("Drug Class: "), html.Span(drug_info["drug_class"])]),
+                    html.P([html.B("Mechanism: "), html.Span(drug_info["mechanism"])]),
+                    html.P([html.B("Clinical Indication: "), html.Span(drug_info["indication"], className="text-muted")]),
+                    html.Div(className="divider-line my-2"),
+                    html.P([html.B("Actionability: "), html.Span(drug_info["clinical_action"], className="text-info")]),
+                ],
+            )
+        else:
+            drug_card = html.Div(
+                className="biomarker-card text-center p-4",
+                children=[
+                    html.H5(f"ℹ️ {gene}", className="text-muted"),
+                    html.P("No direct FDA-approved targeted drug currently mapped for this gene.", className="text-muted"),
+                    html.P("Explore clinical trials or upstream kinase pathway inhibitors.", className="small text-info"),
                 ],
             )
 
-            return roc_fig, metrics_content
+        return km_fig, drug_card
+
+    @app.callback(
+        [
+            Output("external-roc-plot", "figure"),
+            Output("external-metrics-content", "children"),
+        ],
+        [Input("main-tabs", "active_tab")],
+    )
+    def update_external_validation(active_tab):
+        ext_m = RESULTS.get("ext_metrics", pd.DataFrame())
+        ext_r = RESULTS.get("ext_roc", pd.DataFrame())
+
+        if len(ext_r) == 0 or len(ext_m) == 0:
+            return _empty_figure("External validation results not loaded"), html.Div("Metrics unavailable")
+
+        # ROC Curve
+        roc_fig = go.Figure()
+        roc_fig.add_trace(go.Scatter(
+            x=ext_r["fpr"],
+            y=ext_r["tpr"],
+            mode="lines",
+            line=dict(color=GREEN, width=3),
+            name=f"ROC (AUC = {ext_m['roc_auc'].iloc[0]:.4f})",
+            hovertemplate="FPR: %{x:.3f}<br>TPR: %{y:.3f}<extra></extra>",
+        ))
+        # Diagonal chance line
+        roc_fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode="lines",
+            line=dict(color="rgba(255,255,255,0.3)", dash="dash"),
+            name="Chance (AUC = 0.50)",
+        ))
+        roc_fig.update_layout(
+            **PLOT_LAYOUT_DEFAULTS,
+            title=dict(
+                text=f"<b>Cross-Cohort ROC Curve</b> (AUC = {ext_m['roc_auc'].iloc[0]:.4f})<br><sup>Trained: GSE15852 (Malaysia) | Tested: GSE42568 (Europe)</sup>",
+                font=dict(size=12, color=FONT_COLOR),
+            ),
+            xaxis_title="False Positive Rate (1 - Specificity)",
+            yaxis_title="True Positive Rate (Sensitivity)",
+            xaxis=dict(range=[-0.02, 1.02], gridcolor=GRID_COLOR),
+            yaxis=dict(range=[-0.02, 1.02], gridcolor=GRID_COLOR),
+            height=350,
+            legend=dict(x=0.55, y=0.15, bgcolor="rgba(10,10,26,0.6)"),
+        )
+
+        # Metrics cards
+        m = ext_m.iloc[0]
+        metrics_content = html.Div(
+            className="stats-row",
+            style={"gridTemplateColumns": "repeat(2, 1fr)", "gap": "12px", "marginTop": "10px"},
+            children=[
+                make_stat_card(f"{m['test_accuracy']*100:.1f}%", "External Test Accuracy", "accent-cyan", 0),
+                make_stat_card(f"{m['roc_auc']:.4f}", "Cross-Cohort ROC-AUC", "accent-green", 1),
+                make_stat_card(f"{m['sensitivity']*100:.1f}%", "Sensitivity (Tumor Recall)", "accent-pink", 2),
+                make_stat_card(f"{m['specificity']*100:.1f}%", "Specificity (Normal Rule-Out)", "accent-purple", 3),
+            ],
+        )
+
+        return roc_fig, metrics_content
 
     # ── Quick Select Cohort Buttons ──────────────────────────
     @app.callback(
@@ -727,6 +729,183 @@ def register_callbacks(app):
 
         new_subtitle = f"Autonomous Discovery Pipeline • Current Dataset: {accession} ({config.CANCER_TYPE})"
         return status_alert, new_subtitle
+
+    # ── Dynamic Controls & Cohort Titles Callback ────────────
+    @app.callback(
+        [
+            Output("survival-gene-dropdown", "options"),
+            Output("survival-gene-dropdown", "value"),
+            Output("km-plot-title", "children"),
+            Output("km-plot-subtitle", "children"),
+            Output("ext-roc-title", "children"),
+            Output("ext-roc-subtitle", "children"),
+            Output("ai-copilot-header-desc", "children"),
+        ],
+        [
+            Input("main-tabs", "active_tab"),
+            Input("geo-status-output", "children"),
+        ],
+    )
+    def update_dynamic_controls_and_titles(_tab, _status):
+        consensus = RESULTS.get("consensus", pd.DataFrame())
+        survival = RESULTS.get("survival", pd.DataFrame())
+
+        # Collect candidate genes from active findings
+        candidate_genes = []
+        if len(survival) > 0 and "gene" in survival.columns:
+            candidate_genes.extend(survival["gene"].dropna().unique().tolist())
+        if len(consensus) > 0 and "gene" in consensus.columns:
+            candidate_genes.extend(consensus["gene"].dropna().unique().tolist())
+
+        # Fallback hallmarks
+        default_genes = ["MELK", "TOP2A", "TACSTD2", "GATA3", "PTEN", "CDH1", "KRT19", "EGFR", "KRAS", "TP53", "ERBB2", "ESR1"]
+        candidate_genes = list(dict.fromkeys(candidate_genes + default_genes))[:20]
+
+        options = [
+            {"label": f"{g} (Top Candidate Target)", "value": g}
+            for g in candidate_genes
+        ]
+        default_val = candidate_genes[0] if candidate_genes else "TP53"
+
+        # Dynamic titles
+        surv_info = getattr(config, "SURVIVAL_COHORT", {})
+        surv_label = surv_info.get("label", "Clinical Cohort") if isinstance(surv_info, dict) else "Clinical Cohort"
+        km_title = f"Kaplan-Meier Survival Curves ({surv_label})"
+        km_subtitle = f"Patient outcome stratification for {config.CANCER_TYPE} with Log-Rank test"
+
+        val_info = getattr(config, "VALIDATION_COHORT", {})
+        val_label = val_info.get("label", "External Cohort") if isinstance(val_info, dict) else "External Cohort"
+        ext_title = f"Cross-Cohort Generalization (Zero-Shot on {val_label})"
+        ext_subtitle = f"External validation of model trained on {config.GEO_ACCESSION} ({config.CANCER_TYPE})"
+
+        copilot_desc = f"Autonomous oncology reasoning copilot grounded in live pipeline telemetry for {config.GEO_ACCESSION} ({config.CANCER_TYPE})."
+
+        return options, default_val, km_title, km_subtitle, ext_title, ext_subtitle, copilot_desc
+
+    # ── AI Oncologist Copilot Chat Callback ───────────────────
+    @app.callback(
+        [
+            Output("chat-history-container", "children"),
+            Output("chat-history-store", "data"),
+            Output("chat-input-text", "value"),
+        ],
+        [
+            Input("btn-send-chat", "n_clicks"),
+            Input("chat-input-text", "n_submit"),
+            Input("btn-chip-summary", "n_clicks"),
+            Input("btn-chip-drugs", "n_clicks"),
+            Input("btn-chip-biomarkers", "n_clicks"),
+            Input("btn-chip-survival", "n_clicks"),
+            Input("btn-chip-validation", "n_clicks"),
+            Input("btn-clear-chat", "n_clicks"),
+        ],
+        [
+            State("chat-input-text", "value"),
+            State("chat-history-store", "data"),
+        ],
+        prevent_initial_call=True,
+    )
+    def handle_ai_copilot_chat(
+        send_clicks, n_submit,
+        c_summary, c_drugs, c_biomarkers, c_survival, c_validation,
+        clear_clicks,
+        user_text, current_history
+    ):
+        triggered = ctx.triggered_id
+        if not triggered:
+            return no_update, no_update, no_update
+
+        # Default welcome message
+        welcome_elem = html.Div(
+            className="chat-row-assistant",
+            children=[
+                html.Div(
+                    className="chat-bubble-assistant",
+                    children=[
+                        html.H4("👋 Welcome to the AI Oncology Copilot"),
+                        html.P(
+                            "I am your AI research partner, connected directly to this discovery run. "
+                            "I have access to the differentially expressed genes, Random Forest consensus biomarkers, "
+                            "survival hazard ratios, enriched signaling pathways, and targeted therapeutics."
+                        ),
+                        html.P(
+                            "Click any of the quick inquiry buttons above or ask your own question below!"
+                        ),
+                        html.Div("• Ask about specific genes, drug repurposing, or wet-lab experimental designs.", className="small text-muted"),
+                    ],
+                ),
+            ],
+        )
+
+        # Clear conversation
+        if triggered == "btn-clear-chat":
+            return [welcome_elem], [], ""
+
+        # Determine user query
+        query = None
+        if triggered == "btn-chip-summary":
+            query = f"Please summarize the key findings and biological implications of the active discovery run on {config.GEO_ACCESSION} ({config.CANCER_TYPE})."
+        elif triggered == "btn-chip-drugs":
+            query = f"What are the top targeted drug opportunities and clinical mechanisms of action identified for our biomarkers in {config.CANCER_TYPE}?"
+        elif triggered == "btn-chip-biomarkers":
+            query = f"Explain the biological significance, function, and signaling roles of our top consensus biomarkers in {config.CANCER_TYPE}."
+        elif triggered == "btn-chip-survival":
+            query = f"Analyze the clinical survival prognosis results. Which biomarkers correlate significantly with patient overall or relapse-free survival?"
+        elif triggered == "btn-chip-validation":
+            query = f"Propose a rigorous step-by-step wet-lab experimental validation plan (qPCR, Western blot, IHC, in vitro cell assays) for the top biomarkers."
+        elif triggered in ("btn-send-chat", "chat-input-text"):
+            if not user_text or not user_text.strip():
+                return no_update, no_update, no_update
+            query = user_text.strip()
+
+        if not query:
+            return no_update, no_update, no_update
+
+        from src.ai_copilot import query_ai_copilot
+
+        # Update history store
+        history = list(current_history or [])
+        history.append({"role": "user", "content": query})
+
+        # Query LLM with grounded telemetry
+        ai_reply = query_ai_copilot(query, chat_history=history)
+        history.append({"role": "assistant", "content": ai_reply})
+
+        # Render chat messages
+        rendered_messages = [welcome_elem]
+        import datetime
+        now_str = datetime.datetime.now().strftime("%H:%M")
+
+        for msg in history:
+            if msg["role"] == "user":
+                rendered_messages.append(
+                    html.Div(
+                        className="chat-row-user",
+                        children=[
+                            html.Div([
+                                html.Div(msg["content"], className="chat-bubble-user"),
+                                html.Div(f"You • {now_str}", className="chat-meta justify-content-end text-end"),
+                            ], style={"maxWidth": "80%"}),
+                        ],
+                    )
+                )
+            else:
+                rendered_messages.append(
+                    html.Div(
+                        className="chat-row-assistant",
+                        children=[
+                            html.Div([
+                                html.Div(
+                                    dcc.Markdown(msg["content"], dangerously_allow_html=True),
+                                    className="chat-bubble-assistant",
+                                ),
+                                html.Div(f"🤖 AI Copilot (GPT-4o Mini) • {now_str}", className="chat-meta"),
+                            ], style={"maxWidth": "90%"}),
+                        ],
+                    )
+                )
+
+        return rendered_messages, history, ""
 
 
 def _empty_figure(message: str) -> go.Figure:

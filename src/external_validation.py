@@ -45,6 +45,15 @@ _EXT_COHORT_MAP = {
 
 
 def _get_ext_info() -> dict:
+    val_info = getattr(config, "VALIDATION_COHORT", None)
+    if isinstance(val_info, dict) and "accession" in val_info:
+        acc = val_info["accession"]
+        return {
+            "accession": acc,
+            "platform": val_info.get("platform", "GPL570"),
+            "description": val_info.get("label", f"{acc} External Validation Cohort"),
+            "matrix_url": f"https://ftp.ncbi.nlm.nih.gov/geo/series/{acc[:5]}nnn/{acc}/matrix/{acc}_series_matrix.txt.gz",
+        }
     return _EXT_COHORT_MAP.get(config.GEO_ACCESSION, _EXT_COHORT_MAP["GSE15852"])
 
 
@@ -77,6 +86,19 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
         expr_df = pd.read_csv(cache_expr, index_col=0)
         labels = pd.read_csv(cache_labels, index_col=0).squeeze()
         return expr_df, labels
+
+    # Check alternative cached cohorts in data/
+    for alt_acc, alt_name in [("GSE18842", "GSE18842 (NSCLC, n=91)"), ("GSE42568", "GSE42568 (Breast, n=121)")]:
+        alt_expr = os.path.join(config.DATA_DIR, f"{alt_acc}_expression.csv")
+        alt_labels = os.path.join(config.DATA_DIR, f"{alt_acc}_labels.csv")
+        if os.path.exists(alt_expr) and os.path.exists(alt_labels):
+            logger.info(f"External validation cohort '{ext_acc}' cache not found. Using available {alt_name}...")
+            config.VALIDATION_COHORT = {
+                "accession": alt_acc,
+                "n": 91 if alt_acc == "GSE18842" else 121,
+                "label": alt_name,
+            }
+            return pd.read_csv(alt_expr, index_col=0), pd.read_csv(alt_labels, index_col=0).squeeze()
 
     matrix_file = os.path.join(config.DATA_DIR, f"{ext_acc}_series_matrix.txt.gz")
     annot_file = os.path.join(config.DATA_DIR, f"{info['platform']}.annot.gz")

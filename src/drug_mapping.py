@@ -153,9 +153,65 @@ DRUG_DATABASE = {
 }
 
 
+def _fetch_drugs_from_llm(genes: list[str], cancer_type: str) -> dict:
+    """
+    Ask the LLM to generate drug mappings for genes not in the hardcoded database.
+    Returns dict keyed by gene symbol with drug entry dicts.
+    """
+    import json
+    import urllib.request
+    from src.ai_annotator import OPENROUTER_API_URL, DEFAULT_MODEL, get_api_key
+
+    api_key = get_api_key()
+    if not api_key or not genes:
+        return {}
+
+    gene_list = ", ".join(genes[:20])  # cap at 20 to keep prompt short
+    prompt = (
+        f"You are an oncology pharmacologist. For each of these genes in the context of '{cancer_type}', "
+        f"list approved or late-stage clinical drugs:\n{gene_list}\n\n"
+        "Return a JSON object where each key is a gene symbol and the value is an object with:\n"
+        "  'gene_name': full protein name\n"
+        "  'approved_drugs': list of drug names with brand names\n"
+        "  'drug_class': drug class\n"
+        "  'mechanism': mechanism of action (one sentence)\n"
+        "  'indication': clinical indication (one sentence)\n"
+        "  'evidence_tier': 'Tier 1: FDA-Approved', 'Tier 2: Clinical Trial', or 'Tier 3: Preclinical'\n"
+        "  'clinical_action': actionability summary (one sentence)\n"
+        "Only include genes that have real drug evidence. Omit genes with no drug evidence."
+    )
+    payload = json.dumps({
+        "model": DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": "Return only valid JSON with drug information for oncology genes."},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 1200,
+        "temperature": 0.1,
+    }).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://cancer-biomarker-dashboard.local",
+        "X-Title": "Cancer Biomarker Discovery",
+    }
+    try:
+        req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return json.loads(result["choices"][0]["message"]["content"])
+    except Exception as e:
+        logger.warning(f"  AI drug fetch failed: {e}")
+        return {}
+
+
 def map_biomarkers_to_drugs(biomarkers_df: pd.DataFrame = None) -> pd.DataFrame:
     """
     Map biomarker gene list to actionable oncology drugs.
+
+    First checks the hardcoded DRUG_DATABASE, then uses the LLM to
+    generate mappings for any genes not already in the database.
 
     Parameters
     ----------
@@ -175,6 +231,8 @@ def map_biomarkers_to_drugs(biomarkers_df: pd.DataFrame = None) -> pd.DataFrame:
         query_genes = list(DRUG_DATABASE.keys())
 
     records = []
+    missing_genes = []
+
     for gene in query_genes:
         if gene in DRUG_DATABASE:
             entry = DRUG_DATABASE[gene]
@@ -187,15 +245,48 @@ def map_biomarkers_to_drugs(biomarkers_df: pd.DataFrame = None) -> pd.DataFrame:
                 "indication": entry["indication"],
                 "evidence_tier": entry["evidence_tier"],
                 "clinical_action": entry["clinical_action"],
+                "source": "curated",
             })
+        else:
+            missing_genes.append(gene)
+
+    # Ask AI for drugs for genes not in the hardcoded database
+    if missing_genes:
+        cancer_type = getattr(config, "CANCER_TYPE", "cancer")
+        logger.info(f"  Fetching AI drug mappings for {len(missing_genes)} unmapped genes...")
+        ai_drugs = _fetch_drugs_from_llm(missing_genes, cancer_type)
+        for gene, entry in ai_drugs.items():
+            if isinstance(entry, dict) and "approved_drugs" in entry:
+                drugs = entry["approved_drugs"]
+                if isinstance(drugs, list):
+                    # Normalise: LLM sometimes returns dicts like {"name": "X"} instead of plain strings
+                    drugs_str = "; ".join(
+                        d.get("name", str(d)) if isinstance(d, dict) else str(d)
+                        for d in drugs
+                    )
+                else:
+                    drugs_str = str(drugs)
+                records.append({
+                    "gene": gene,
+                    "gene_name": entry.get("gene_name", gene),
+                    "approved_drugs": drugs_str,
+                    "drug_class": entry.get("drug_class", ""),
+                    "mechanism": entry.get("mechanism", ""),
+                    "indication": entry.get("indication", ""),
+                    "evidence_tier": entry.get("evidence_tier", "Tier 2: Clinical Trial"),
+                    "clinical_action": entry.get("clinical_action", ""),
+                    "source": "ai_generated",
+                })
+        logger.info(f"  AI returned drug mappings for {len(ai_drugs)} additional genes")
 
     df = pd.DataFrame(records)
     if len(df) > 0:
         os.makedirs(config.RESULTS_DIR, exist_ok=True)
         out_path = os.path.join(config.RESULTS_DIR, "drug_actionability.csv")
         df.to_csv(out_path, index=False)
-        logger.info(f"Saved drug actionability mappings for {len(df)} biomarkers -> {out_path}")
+        logger.info(f"Saved drug actionability mappings for {len(df)} biomarkers → {out_path}")
     return df
+
 
 
 def get_drug_details_for_gene(gene: str) -> dict | None:

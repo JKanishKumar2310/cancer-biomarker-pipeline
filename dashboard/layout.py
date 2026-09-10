@@ -28,14 +28,6 @@ PLOT_LAYOUT_DEFAULTS = dict(
     paper_bgcolor=PAPER_BG,
     plot_bgcolor=PLOT_BG,
     font=dict(family="Inter, sans-serif", color=FONT_COLOR, size=12),
-    margin=dict(l=50, r=30, t=40, b=50),
-    xaxis=dict(gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
-    yaxis=dict(gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
-    legend=dict(
-        bgcolor="rgba(0,0,0,0)",
-        bordercolor="rgba(255,255,255,0.1)",
-        font=dict(size=11),
-    ),
 )
 
 
@@ -348,11 +340,9 @@ def create_layout():
                                             html.Label("Select Biomarker for Clinical Outcomes:"),
                                             dcc.Dropdown(
                                                 id="survival-gene-dropdown",
-                                                options=[
-                                                    {"label": f"{g} (Top Prognostic Target)", "value": g}
-                                                    for g in ["MELK", "TOP2A", "TACSTD2", "GATA3", "PTEN", "CDH1", "KRT19", "BIN1", "PCNA", "CDK4", "ERBB2", "ESR1"]
-                                                ],
-                                                value="MELK",
+                                                options=[],
+                                                value=None,
+                                                placeholder="Select a prognostic biomarker target...",
                                                 clearable=False,
                                                 className="dark-dropdown",
                                             ),
@@ -382,9 +372,10 @@ def create_layout():
                                     html.Div(
                                         className="plot-container",
                                         children=[
-                                            html.Div("Kaplan-Meier Survival Curves (GSE1456 Cohort, n=159)", className="plot-title"),
+                                            html.Div("Kaplan-Meier Survival Curves", id="km-plot-title", className="plot-title"),
                                             html.Div(
                                                 "Patient stratification into High vs Low biomarker expression with Log-Rank test",
+                                                id="km-plot-subtitle",
                                                 className="plot-subtitle",
                                             ),
                                             dcc.Graph(id="kaplan-meier-plot", config={"displayModeBar": True}),
@@ -410,9 +401,10 @@ def create_layout():
                                     html.Div(
                                         className="plot-container",
                                         children=[
-                                            html.Div("Cross-Cohort Generalization (Zero-Shot on GSE42568, n=121)", className="plot-title"),
+                                            html.Div("Cross-Cohort Generalization (Zero-Shot ROC)", id="ext-roc-title", className="plot-title"),
                                             html.Div(
-                                                "External ROC Curve: Model trained on GSE15852 evaluated on independent European cohort",
+                                                "External ROC Curve: Model evaluated on independent cohort",
+                                                id="ext-roc-subtitle",
                                                 className="plot-subtitle",
                                             ),
                                             dcc.Graph(id="external-roc-plot", config={"displayModeBar": True}),
@@ -429,6 +421,132 @@ def create_layout():
                                             html.Div(id="external-metrics-content"),
                                         ],
                                     ),
+                                ],
+                            ),
+                        ],
+                    ),
+
+                    # Tab 7: AI Oncologist Copilot
+                    dbc.Tab(
+                        label="🤖 AI Oncologist Copilot",
+                        tab_id="tab-ai-copilot",
+                        children=[
+                            html.Div(
+                                className="ai-copilot-container my-3",
+                                children=[
+                                    dbc.Card(
+                                        className="p-3 mb-3",
+                                        style={
+                                            "backgroundColor": "rgba(20, 20, 50, 0.75)",
+                                            "border": "1px solid rgba(0, 212, 255, 0.3)",
+                                            "borderRadius": "14px",
+                                            "boxShadow": "0 8px 32px 0 rgba(0, 0, 0, 0.37)",
+                                        },
+                                        children=[
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    html.H4("🧬 AI Oncology Research Assistant", className="m-0", style={"color": CYAN, "fontWeight": "700"}),
+                                                    html.P(
+                                                        id="ai-copilot-header-desc",
+                                                        className="text-muted m-0 small mt-1",
+                                                        children="Autonomous clinical reasoning copilot grounded in live pipeline biomarkers, pathways, survival metrics, and targeted therapeutics.",
+                                                    ),
+                                                ], md=8),
+                                                dbc.Col([
+                                                    dbc.Badge("GPT-4o Mini", color="info", className="me-2 p-2"),
+                                                    dbc.Button("🧹 Clear Conversation", id="btn-clear-chat", size="sm", outline=True, color="secondary"),
+                                                ], md=4, className="d-flex justify-content-md-end align-items-center mt-2 mt-md-0"),
+                                            ]),
+                                            html.Hr(style={"borderColor": "rgba(255,255,255,0.1)", "margin": "14px 0 10px"}),
+                                            html.Div("Quick Investigation Queries:", style={"fontSize": "0.82rem", "color": "#94a3b8", "marginBottom": "8px"}),
+                                            html.Div(
+                                                className="d-flex flex-wrap gap-2",
+                                                children=[
+                                                    dbc.Button("💡 Summarize Findings", id="btn-chip-summary", size="sm", outline=True, className="chip-btn"),
+                                                    dbc.Button("💊 Targeted Drug Opportunities", id="btn-chip-drugs", size="sm", outline=True, className="chip-btn"),
+                                                    dbc.Button("🧬 Interpret Top Biomarkers", id="btn-chip-biomarkers", size="sm", outline=True, className="chip-btn"),
+                                                    dbc.Button("⏳ Clinical Survival Prognosis", id="btn-chip-survival", size="sm", outline=True, className="chip-btn"),
+                                                    dbc.Button("🧪 Wet-Lab Validation Protocol", id="btn-chip-validation", size="sm", outline=True, className="chip-btn"),
+                                                ],
+                                            ),
+                                        ],
+                                    ),
+
+                                    # Chat history container
+                                    html.Div(
+                                        id="chat-history-container",
+                                        className="chat-history-box",
+                                        style={
+                                            "height": "480px",
+                                            "overflowY": "auto",
+                                            "padding": "20px",
+                                            "backgroundColor": "rgba(10, 10, 26, 0.75)",
+                                            "borderRadius": "14px",
+                                            "border": "1px solid rgba(255, 255, 255, 0.08)",
+                                            "marginBottom": "16px",
+                                            "display": "flex",
+                                            "flexDirection": "column",
+                                            "gap": "14px",
+                                        },
+                                        children=[
+                                            html.Div(
+                                                className="chat-row-assistant",
+                                                children=[
+                                                    html.Div(
+                                                        className="chat-bubble-assistant",
+                                                        children=[
+                                                            html.H4("👋 Welcome to the AI Oncology Copilot"),
+                                                            html.P(
+                                                                "I am your AI research partner, connected directly to this discovery run. "
+                                                                "I have access to the differentially expressed genes, Random Forest consensus biomarkers, "
+                                                                "survival hazard ratios, enriched signaling pathways, and targeted therapeutics."
+                                                            ),
+                                                            html.P(
+                                                                "Click any of the quick inquiry buttons above or ask your own question below!"
+                                                            ),
+                                                            html.Div("• Ask about specific genes, drug repurposing, or wet-lab experimental designs.", className="small text-muted"),
+                                                        ],
+                                                    ),
+                                                ],
+                                            ),
+                                        ],
+                                    ),
+
+                                    # Input form
+                                    dbc.InputGroup([
+                                        dbc.Input(
+                                            id="chat-input-text",
+                                            placeholder="Ask anything about the biomarkers, pathways, survival metrics, or drug mechanisms...",
+                                            type="text",
+                                            style={
+                                                "backgroundColor": "rgba(20, 20, 45, 0.85)",
+                                                "color": FONT_COLOR,
+                                                "border": "1px solid rgba(0, 212, 255, 0.3)",
+                                                "fontSize": "0.95rem",
+                                                "padding": "12px 16px",
+                                            },
+                                        ),
+                                        dbc.Button(
+                                            "Ask Copilot 🚀",
+                                            id="btn-send-chat",
+                                            color="primary",
+                                            style={
+                                                "background": f"linear-gradient(135deg, {CYAN} 0%, {PURPLE} 100%)",
+                                                "border": "none",
+                                                "fontWeight": "600",
+                                                "padding": "0 24px",
+                                            },
+                                        ),
+                                    ], className="mb-2"),
+
+                                    dcc.Loading(
+                                        id="chat-loading",
+                                        type="dots",
+                                        color=CYAN,
+                                        children=html.Div(id="chat-loading-anchor"),
+                                    ),
+
+                                    dcc.Store(id="chat-history-store", data=[]),
                                 ],
                             ),
                         ],
