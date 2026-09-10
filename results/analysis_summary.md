@@ -12,13 +12,13 @@
 - **Top Consensus Biomarkers:** CDH3, RFC3, ABCA8, C2CD4A, CEMIP, GPSM2, CA2, TBX3, SNAI2, S100A2
 
 ## 3. Independent Cross-Cohort External Validation (The Gold Standard)
-- **Validation Cohort:** GSE20916 (Colorectal, n=90)
+- **Validation Cohort:** GSE39582 (Colorectal Adenoma & Carcinoma, n=50)
 - **Signature Size:** 20 consensus genes
 - **Model Retrained?** No (Zero-shot transfer of GSE8671-trained classifier)
-- **Accuracy:** 51.65%
-- **ROC-AUC:** 0.8930
-- **Sensitivity (Tumor Recall):** 100.00%
-- **Specificity (Normal Recall):** 2.22%
+- **Accuracy:** 86.81%
+- **ROC-AUC:** 0.9237
+- **Sensitivity (Tumor Recall):** 95.65%
+- **Specificity (Normal Recall):** 77.78%
 
 ## 4. Clinical Survival Analysis (Kaplan-Meier & Log-Rank)
 - **Target Disease:** Colorectal Adenoma & Carcinoma (CRC)
