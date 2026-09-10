@@ -472,44 +472,49 @@ def create_layout():
                                         ],
                                     ),
 
-                                    # Chat history container
-                                    html.Div(
-                                        id="chat-history-container",
-                                        className="chat-history-box",
-                                        style={
-                                            "height": "480px",
-                                            "overflowY": "auto",
-                                            "padding": "20px",
-                                            "backgroundColor": "rgba(10, 10, 26, 0.75)",
-                                            "borderRadius": "14px",
-                                            "border": "1px solid rgba(255, 255, 255, 0.08)",
-                                            "marginBottom": "16px",
-                                            "display": "flex",
-                                            "flexDirection": "column",
-                                            "gap": "14px",
-                                        },
-                                        children=[
-                                            html.Div(
-                                                className="chat-row-assistant",
-                                                children=[
-                                                    html.Div(
-                                                        className="chat-bubble-assistant",
-                                                        children=[
-                                                            html.H4("👋 Welcome to the AI Oncology Copilot"),
-                                                            html.P(
-                                                                "I am your AI research partner, connected directly to this discovery run. "
-                                                                "I have access to the differentially expressed genes, Random Forest consensus biomarkers, "
-                                                                "survival hazard ratios, enriched signaling pathways, and targeted therapeutics."
-                                                            ),
-                                                            html.P(
-                                                                "Click any of the quick inquiry buttons above or ask your own question below!"
-                                                            ),
-                                                            html.Div("• Ask about specific genes, drug repurposing, or wet-lab experimental designs.", className="small text-muted"),
-                                                        ],
-                                                    ),
-                                                ],
-                                            ),
-                                        ],
+                                    # Chat history container with loading indicator
+                                    dcc.Loading(
+                                        id="chat-loading",
+                                        type="dot",
+                                        color=CYAN,
+                                        children=html.Div(
+                                            id="chat-history-container",
+                                            className="chat-history-box",
+                                            style={
+                                                "height": "480px",
+                                                "overflowY": "auto",
+                                                "padding": "20px",
+                                                "backgroundColor": "rgba(10, 10, 26, 0.75)",
+                                                "borderRadius": "14px",
+                                                "border": "1px solid rgba(255, 255, 255, 0.08)",
+                                                "marginBottom": "16px",
+                                                "display": "flex",
+                                                "flexDirection": "column",
+                                                "gap": "14px",
+                                            },
+                                            children=[
+                                                html.Div(
+                                                    className="chat-row-assistant",
+                                                    children=[
+                                                        html.Div(
+                                                            className="chat-bubble-assistant",
+                                                            children=[
+                                                                html.H4("👋 Welcome to the AI Oncology Copilot"),
+                                                                html.P(
+                                                                    "I am your AI research partner, connected directly to this discovery run. "
+                                                                    "I have access to the differentially expressed genes, Random Forest consensus biomarkers, "
+                                                                    "survival hazard ratios, enriched signaling pathways, and targeted therapeutics."
+                                                                ),
+                                                                html.P(
+                                                                    "Click any of the quick inquiry buttons above or ask your own question below!"
+                                                                ),
+                                                                html.Div("• Ask about specific genes, drug repurposing, or wet-lab experimental designs.", className="small text-muted"),
+                                                            ],
+                                                        ),
+                                                    ],
+                                                ),
+                                            ],
+                                        ),
                                     ),
 
                                     # Input form
@@ -538,13 +543,6 @@ def create_layout():
                                             },
                                         ),
                                     ], className="mb-2"),
-
-                                    dcc.Loading(
-                                        id="chat-loading",
-                                        type="dots",
-                                        color=CYAN,
-                                        children=html.Div(id="chat-loading-anchor"),
-                                    ),
 
                                     dcc.Store(id="chat-history-store", data=[]),
                                 ],
