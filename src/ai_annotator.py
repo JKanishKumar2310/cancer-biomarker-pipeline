@@ -21,7 +21,7 @@ from src.utils import logger
 
 # OpenRouter API endpoint (compatible with OpenAI format)
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"  # Ultra-fast, zero-cost NVIDIA Nemotron 3.5
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
 
 def get_api_key() -> str | None:
@@ -96,7 +96,7 @@ def fetch_known_markers_from_llm(cancer_type: str, api_key: str, model: str = No
 
     try:
         req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             result = json.loads(response.read().decode("utf-8"))
             content = json.loads(result["choices"][0]["message"]["content"])
             markers = content.get("markers", [])

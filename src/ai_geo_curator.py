@@ -17,9 +17,34 @@ import config
 from src.utils import logger
 
 
+def _download_with_timeout(url: str, dest_path: str, timeout: int = 15):
+    """Download a file with a strict socket/connection timeout."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Bioinformatics/Pipeline"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open(dest_path, "wb") as f_out:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+    except TimeoutError:
+        raise TimeoutError(f"NCBI connection timed out after {timeout} seconds. The NCBI server may be temporarily slow or unresponsive.")
+    except Exception as e:
+        if "timed out" in str(e).lower():
+            raise TimeoutError(f"NCBI download timed out after {timeout} seconds.")
+        raise e
+
+
 def fetch_geo_metadata(accession: str) -> dict:
     """
     Download and parse header metadata of a GEO series matrix.
+    Enforces a 15-second download timeout and performs an immediate format check
+    to identify incompatible assays (ChIP-seq, ATAC-seq, single-cell raw sequencing, etc.)
+    in under 2 seconds.
 
     Returns
     -------
@@ -41,29 +66,97 @@ def fetch_geo_metadata(accession: str) -> dict:
     local_path = os.path.join(config.DATA_DIR, f"{accession}_series_matrix.txt.gz")
 
     if not os.path.exists(local_path):
-        logger.info(f"Downloading {accession} series matrix metadata from NCBI...")
+        logger.info(f"Downloading {accession} series matrix metadata from NCBI (timeout=15s)...")
         try:
-            urllib.request.urlretrieve(url, local_path)
+            _download_with_timeout(url, local_path, timeout=15)
         except Exception as e:
-            return {"success": False, "error": f"Failed to download from {url}: {e}"}
+            return {"success": False, "error": f"NCBI Download Failed: {e}"}
 
-    # Parse metadata header
+    # Parse metadata header and verify assay compatibility in < 2 seconds
     meta_lines = []
     platform = "GPL570"  # default fallback
     series_title = ""
+    series_types = []
     supplementary_files = []
+    table_rows = 0
+    in_table = False
+
     with gzip.open(local_path, "rt", encoding="utf-8", errors="ignore") as f:
-        for i, line in enumerate(f):
+        for line in f:
             if line.startswith("!series_matrix_table_begin"):
-                break
+                in_table = True
+                continue
+            if in_table:
+                if line.startswith("!series_matrix_table_end"):
+                    break
+                table_rows += 1
+                if table_rows > 25:
+                    # Found sufficient expression rows, can stop reading early
+                    break
+                continue
+
             if line.startswith("!Series_title"):
                 series_title = line.strip().split("\t", 1)[-1].strip(' "')
+            elif line.startswith("!Series_type"):
+                stype = line.strip().split("\t", 1)[-1].strip(' "')
+                if stype:
+                    series_types.append(stype)
             elif line.startswith("!Series_platform_id"):
                 platform = line.strip().split("\t", 1)[-1].strip(' "')
             elif line.startswith("!Series_supplementary_file"):
                 supp = line.strip().split("\t", 1)[-1].strip(' "')
                 supplementary_files.append(supp)
             meta_lines.append(line)
+
+    # Fast Format & Assay Type Verification (< 2 seconds)
+    type_str = " ".join(series_types).lower()
+    title_str = series_title.lower()
+
+    # Detect non-expression or unsupported sequencing formats
+    is_chip = any(w in type_str or w in title_str for w in ["chip-seq", "chipseq", "chromatin immunoprecipitation", "tf-binding"])
+    is_atac = any(w in type_str or w in title_str for w in ["atac-seq", "atacseq", "chromatin accessibility"])
+    is_meth = any(w in type_str or w in title_str for w in ["bisulfite-seq", "dna methylation profiling", "methyl-seq"])
+    is_hic = any(w in type_str or w in title_str for w in ["hi-c", "chromosome conformation"])
+    is_single_cell = any(w in type_str or w in title_str for w in ["single cell", "single-cell", "scrna-seq", "10x genomics", "smart-seq"])
+
+    if is_chip or is_atac or is_meth or is_hic or is_single_cell:
+        assay_name = "ChIP-seq" if is_chip else ("ATAC-seq" if is_atac else ("DNA Methylation" if is_meth else ("Hi-C" if is_hic else "Single-Cell Sequencing")))
+        return {
+            "success": False,
+            "error": (
+                f"Incompatible Assay Format: '{accession}' is a {assay_name} study ('{series_title}'), "
+                f"not a bulk gene expression dataset. The biomarker discovery pipeline requires bulk tumor vs normal "
+                f"gene expression matrices (e.g. Microarray or bulk RNA-seq cohorts like GSE8671, GSE19804, GSE15852)."
+            ),
+            "accession": accession,
+            "series_types": series_types,
+        }
+
+    # Verify that the matrix table actually contains expression data rows
+    has_valid_suppl = False
+    suppl_url = None
+    raw_read_patterns = ["raw.tar", ".bam", ".sra", ".bw", ".bed", ".bigwig", ".cel", "_reads", "reads.txt", "fastq", "matrix.mtx", "barcodes.tsv"]
+    if table_rows == 0:
+        # Check supplementary files for precomputed count/expression matrices
+        for s_file in supplementary_files:
+            s_lower = s_file.lower()
+            if any(ext in s_lower for ext in [".txt.gz", ".tsv.gz", ".csv.gz", ".txt", ".tsv", ".csv"]):
+                if not any(bad in s_lower for bad in raw_read_patterns):
+                    suppl_url = s_file
+                    has_valid_suppl = True
+                    break
+
+        if not has_valid_suppl:
+            return {
+                "success": False,
+                "error": (
+                    f"Empty Expression Matrix: '{accession}' ('{series_title}') contains 0 gene expression data rows "
+                    f"in its NCBI GEO series matrix table. Raw read files are not precomputed expression matrices. "
+                    f"Please use standard cohorts with embedded expression matrices (e.g. GSE8671, GSE19804, GSE15852)."
+                ),
+                "accession": accession,
+                "series_types": series_types,
+            }
 
     sample_ids, sample_titles, characteristics = [], [], []
     for line in meta_lines:
@@ -88,9 +181,11 @@ def fetch_geo_metadata(accession: str) -> dict:
         "accession": accession,
         "platform": platform,
         "series_title": series_title,
+        "series_types": series_types,
         "samples": sample_dict,
         "local_path": local_path,
         "supplementary_files": supplementary_files,
+        "suppl_url": suppl_url,
     }
 
 
@@ -140,23 +235,20 @@ def curate_with_llm(accession: str, series_title: str, samples: dict, api_key: s
     )
 
     payload = {
-        "model": "nvidia/nemotron-3.5-lightning:free",
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
     }
 
-    for attempt in range(2):
-        try:
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                content = data["choices"][0]["message"]["content"]
-                return json.loads(content)
-        except Exception as e:
-            if attempt == 0:
-                continue
-            logger.warning(f"LLM curation query failed: {e}. Falling back to semantic parser.")
-            return None
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            content = data["choices"][0]["message"]["content"]
+            return json.loads(content)
+    except Exception as e:
+        logger.warning(f"LLM curation query failed or timed out: {e}. Instantly falling back to semantic parser.")
+        return None
 
 
 def _matches_term(term: str, text: str) -> bool:

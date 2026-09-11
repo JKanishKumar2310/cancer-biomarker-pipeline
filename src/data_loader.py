@@ -64,11 +64,33 @@ _MATRIX_URLS = {
 }
 
 
+def _download_with_timeout(url: str, dest_path: str, timeout: int = 15):
+    """Download a file with a strict socket/connection timeout."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Bioinformatics/Pipeline"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open(dest_path, "wb") as f_out:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+    except TimeoutError:
+        raise TimeoutError(f"NCBI connection timed out after {timeout} seconds. The NCBI server may be temporarily slow or unresponsive.")
+    except Exception as e:
+        if "timed out" in str(e).lower():
+            raise TimeoutError(f"NCBI download timed out after {timeout} seconds.")
+        raise e
+
+
 def _download_if_missing(path: str, url: str, label: str):
-    """Download a file from a URL if it doesn't already exist locally."""
+    """Download a file from a URL if it doesn't already exist locally with a 15s timeout."""
     if not os.path.exists(path):
-        logger.info(f"Downloading {label} from NCBI...")
-        urllib.request.urlretrieve(url, path)
+        logger.info(f"Downloading {label} from NCBI (timeout=15s)...")
+        _download_with_timeout(url, path, timeout=15)
         logger.info(f"  Saved → {os.path.basename(path)}")
 
 

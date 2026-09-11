@@ -15,7 +15,7 @@ import config
 from src.utils import logger
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
 
 def get_api_key() -> str | None:
@@ -132,17 +132,17 @@ def query_ai_copilot(user_query: str, chat_history: list = None) -> str:
         f"{context}\n\n"
         "INSTRUCTIONS:\n"
         "1. Base your answer directly on the loaded dataset, consensus biomarkers, survival outcomes, and drug mappings shown above.\n"
-        "2. Provide deep, biologically rigorous explanations (e.g. molecular mechanisms, downstream signaling cascades, prognostic implications).\n"
-        "3. Format cleanly using GitHub Flavored Markdown with headers, bullet points, bold gene names (e.g. **EGFR**, **TP53**), and tables when helpful.\n"
-        "4. When asked for experimental validation, provide concrete wet-lab assays (RT-qPCR, Western blot, IHC, knockdown/CRISPR, cell viability).\n"
-        "5. Keep responses authoritative, concise, and scientifically accurate."
+        "2. Provide deep, biologically rigorous explanations (molecular mechanisms, downstream signaling cascades, prognostic implications).\n"
+        "3. Format cleanly with bullet points, bold gene names (e.g. **CDH3**, **AXIN2**), and concise summary tables when helpful.\n"
+        "4. Keep responses high-impact, direct, and under 200 words so the clinical scientist gets instant answers.\n"
+        "5. When asked for experimental validation, list 2-3 specific assays (RT-qPCR, Western blot, IHC, siRNA knockdown)."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Include recent history for conversation continuity (up to 6 turns)
+    # Include recent history for conversation continuity (up to 4 turns)
     if chat_history:
-        for turn in chat_history[-6:]:
+        for turn in chat_history[-4:]:
             role = turn.get("role", "user")
             content = turn.get("content", "")
             if role in ("user", "assistant") and content:
@@ -153,8 +153,8 @@ def query_ai_copilot(user_query: str, chat_history: list = None) -> str:
     payload = json.dumps({
         "model": DEFAULT_MODEL,
         "messages": messages,
-        "max_tokens": 900,
-        "temperature": 0.25,
+        "max_tokens": 350,
+        "temperature": 0.2,
     }).encode("utf-8")
 
     headers = {
@@ -168,14 +168,14 @@ def query_ai_copilot(user_query: str, chat_history: list = None) -> str:
     for attempt in range(2):
         try:
             req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=12) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
             last_err = e
             if attempt == 0:
                 import time
-                time.sleep(1)
+                time.sleep(0.5)
                 continue
 
     logger.warning(f"AI Copilot request failed after retry: {last_err}")
