@@ -18,14 +18,24 @@ import config
 from src.utils import logger
 
 
-def extract_patient_id(title: str, sample_id: str) -> str:
+def extract_patient_id(title: str, sample_id: str, characteristics: list[str] | None = None) -> str:
     """
-    Extract or infer patient identifier from sample titles/metadata.
+    Extract or infer patient identifier from sample titles or characteristics.
     Supports common GEO naming conventions:
       - 'Biopsy of the normal mucosa ... from patient #1' -> 'Patient_001'
       - 'Lung Cancer 2T' / 'Lung Normal 2N' -> 'Patient_002'
       - 'Normal BC0043N' / 'Cancer BC0043T' -> 'Patient_043'
+      - 'donor: 102548' / 'subject: S01' -> 'Patient_102548'
     """
+    # Pattern 0: Check characteristics for donor/subject/patient/case
+    if characteristics:
+        char_str = " ".join(characteristics)
+        m0 = re.search(r'(?:donor|subject|patient|case)[\s_:]+([A-Za-z0-9_-]+)', char_str, re.IGNORECASE)
+        if m0:
+            val = m0.group(1).strip()
+            digits = re.search(r'\d+', val)
+            return f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{val}"
+
     if not isinstance(title, str):
         return sample_id
 
@@ -130,6 +140,11 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
         elif line.startswith("!Sample_characteristics_ch1"):
             characteristics.append([x.strip(' "\t\r\n') for x in line.split("\t")[1:]])
 
+    # Structure per-sample characteristics dictionary
+    sample_chars = {}
+    for i, s_id in enumerate(sample_ids):
+        sample_chars[s_id] = [ch[i] for ch in characteristics if i < len(ch)]
+
     # Classify samples using AI Curator (template-based with 100% precision)
     try:
         from src.ai_geo_curator import curate_dataset
@@ -144,7 +159,7 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
         labels = {}
         for i, s_id in enumerate(sample_ids):
             title = sample_titles[i].lower() if i < len(sample_titles) else ""
-            chars = " ".join([ch[i].lower() for ch in characteristics if i < len(ch) and not ch[i].lower().startswith("cel filename")])
+            chars = " ".join([c.lower() for c in sample_chars.get(s_id, []) if not c.lower().startswith("cel filename")])
 
             if any(w in title for w in ["normal", "healthy", "adjacent"]):
                 labels[s_id] = "Normal"
@@ -225,9 +240,37 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
             comp = "gzip" if suppl_filename.endswith(".gz") else None
             df_suppl = pd.read_csv(suppl_local, sep=sep, compression=comp, index_col=0)
 
-            # Map sample titles to GSM accessions if needed
-            title_to_gsm = dict(zip(sample_titles, sample_ids))
-            df_suppl = df_suppl.rename(columns=title_to_gsm)
+            # Map sample columns to GSM accessions using intelligent title & donor matching
+            col_to_gsm = {}
+            for col in df_suppl.columns:
+                matched = None
+                col_clean = re.sub(r'[\.\-_\s]+', '', str(col)).lower()
+                for i, s_id in enumerate(sample_ids):
+                    title = sample_titles[i] if i < len(sample_titles) else ""
+                    t_clean = re.sub(r'[\.\-_\s]+', '', str(title)).lower()
+                    if str(col).lower() == s_id.lower() or col_clean == t_clean:
+                        matched = s_id
+                        break
+                if not matched:
+                    # Check characteristics (e.g. donor: 102548, CA.102548 vs CAP.102548)
+                    digits = ''.join(c for c in str(col) if c.isdigit())
+                    is_tumor_col = 'cap' not in str(col).lower() and ('ca' in str(col).lower() or 'tumor' in str(col).lower())
+                    is_normal_col = 'cap' in str(col).lower() or 'norm' in str(col).lower() or 'adj' in str(col).lower()
+                    for i, s_id in enumerate(sample_ids):
+                        title = sample_titles[i] if i < len(sample_titles) else ""
+                        chars = sample_chars.get(s_id, [])
+                        chars_str = ' '.join(chars).lower()
+                        is_tumor_s = 'tumor' in str(title).lower() or 'tumor' in chars_str
+                        is_normal_s = 'normal' in str(title).lower() or 'normal' in chars_str
+                        if digits and digits in chars_str:
+                            if (is_tumor_col and is_tumor_s) or (is_normal_col and is_normal_s):
+                                matched = s_id
+                                break
+                if matched:
+                    col_to_gsm[col] = matched
+
+            if len(col_to_gsm) > 0:
+                df_suppl = df_suppl.rename(columns=col_to_gsm)
 
             # Clean and filter non-zero
             df_suppl = df_suppl.apply(pd.to_numeric, errors="coerce").fillna(0)
@@ -243,16 +286,23 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
         label_series.index = label_series.index.map(lambda x: gsm_to_title.get(x, x))
         common = df_genes.columns.intersection(label_series.index)
 
+    if len(common) == 0:
+        raise ValueError(
+            f"Failed to align sample columns ({df_genes.shape[1]}) with detected sample labels ({len(label_series)}) for {accession}."
+        )
+
     df_genes = df_genes[common]
     label_series = label_series[common]
 
     # Log2-transform raw intensities if needed
-    if df_genes.values.max() > 50:
+    if df_genes.size > 0 and df_genes.values.max() > 50:
         df_genes = np.log2(df_genes + 1)
 
     patient_map = {}
-    for s_id, title in zip(sample_ids, sample_titles):
-        patient_map[s_id] = extract_patient_id(title, s_id)
+    for i, s_id in enumerate(sample_ids):
+        title = sample_titles[i] if i < len(sample_titles) else ""
+        chars = sample_chars.get(s_id, [])
+        patient_map[s_id] = extract_patient_id(title, s_id, chars)
 
     patient_ids = pd.Series([patient_map.get(s, s) for s in label_series.index], index=label_series.index, name="patient_id")
     label_series.attrs["patient_id"] = patient_ids
