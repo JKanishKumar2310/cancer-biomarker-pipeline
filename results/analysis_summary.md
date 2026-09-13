@@ -2,33 +2,33 @@
 
 ## 1. Discovery Cohort
 - **Cancer Type:** Colorectal Adenoma & Carcinoma (CRC)
-- **Source:** NCBI GEO (GSE8671)
+- **Source:** NCBI GEO (GSE183947)
 
 ## 2. Discovery Differential Expression & ML Ranking
-- **Total genes analyzed:** 16,326
-- **Upregulated in tumor:** 815 genes (log2FC > 1.0, adj. p < 0.05)
-- **Downregulated in tumor:** 1232 genes (log2FC < -1.0, adj. p < 0.05)
-- **Consensus biomarkers (DE + ML):** 44 genes
-- **Top Consensus Biomarkers:** CDH3, RFC3, ABCA8, C2CD4A, CEMIP, GPSM2, CA2, TBX3, SNAI2, S100A2
+- **Total genes analyzed:** 15,076
+- **Upregulated in tumor:** 953 genes (log2FC > 1.0, adj. p < 0.05)
+- **Downregulated in tumor:** 779 genes (log2FC < -1.0, adj. p < 0.05)
+- **Consensus biomarkers (DE + ML):** 50 genes
+- **Top Consensus Biomarkers:** ZNF223, DEFB130, FAM47E-STBD1, CCDC177, MDGA2, GOLGA7B, KLK9, TLR9, LIMS3, SOX7
 
 ## 3. Independent Cross-Cohort External Validation (The Gold Standard)
-- **Validation Cohort:** GSE39582 (Colorectal Adenoma & Carcinoma, n=50)
+- **Validation Cohort:** GSE20916 (Colorectal, n=145)
 - **Signature Size:** 20 consensus genes
-- **Model Retrained?** No (Zero-shot transfer of GSE8671-trained classifier)
-- **Accuracy:** 86.81%
-- **ROC-AUC:** 0.9237
-- **Sensitivity (Tumor Recall):** 95.65%
-- **Specificity (Normal Recall):** 77.78%
+- **Model Retrained?** No (Zero-shot transfer of GSE183947-trained classifier)
+- **Accuracy:** 71.72%
+- **ROC-AUC:** 0.8473
+- **Sensitivity (Tumor Recall):** 83.17%
+- **Specificity (Normal Recall):** 45.45%
 
 ## 4. Clinical Survival Analysis (Kaplan-Meier & Log-Rank)
 - **Target Disease:** Colorectal Adenoma & Carcinoma (CRC)
-- **Prognostically Significant Genes (OS p < 0.05):** 19 genes
-  - **TOP2A**: Overall Survival HR = 3.76, Log-Rank p = 3.9219e-04 (5-yr Surv: High 74.1% vs Low 93.5%) | RFS HR = 3.62 (p = 1.7113e-06)
-  - **CDK1**: Overall Survival HR = 3.74, Log-Rank p = 4.0977e-04 (5-yr Surv: High 75.1% vs Low 92.5%) | RFS HR = 3.69 (p = 1.1688e-06)
-  - **RRM2**: Overall Survival HR = 3.69, Log-Rank p = 4.8999e-04 (5-yr Surv: High 74.3% vs Low 93.5%) | RFS HR = 3.69 (p = 1.1628e-06)
-  - **EPCAM**: Overall Survival HR = 3.65, Log-Rank p = 5.7214e-04 (5-yr Surv: High 75.7% vs Low 92.5%) | RFS HR = 1.95 (p = 8.8682e-03)
-  - **CDH3**: Overall Survival HR = 3.54, Log-Rank p = 7.8033e-04 (5-yr Surv: High 76.5% vs Low 91.9%) | RFS HR = 2.94 (p = 4.5726e-05)
-  - **PCNA**: Overall Survival HR = 3.26, Log-Rank p = 1.1651e-03 (5-yr Surv: High 75.3% vs Low 92.3%) | RFS HR = 2.64 (p = 1.7639e-04)
+- **Prognostically Significant Genes (OS p < 0.05):** 7 genes
+  - **CDX2**: Overall Survival HR = 0.62, Log-Rank p = 7.6345e-04 (5-yr Surv: High 75.7% vs Low 60.6%) | RFS HR = 0.65 (p = 3.8322e-03)
+  - **TROAP**: Overall Survival HR = 0.69, Log-Rank p = 8.7627e-03 (5-yr Surv: High 73.2% vs Low 63.1%) | RFS HR = 0.65 (p = 3.4678e-03)
+  - **LGR5**: Overall Survival HR = 0.69, Log-Rank p = 9.5534e-03 (5-yr Surv: High 74.0% vs Low 62.0%) | RFS HR = 0.88 (p = 3.8257e-01)
+  - **MKI67**: Overall Survival HR = 0.73, Log-Rank p = 2.9071e-02 (5-yr Surv: High 72.4% vs Low 64.0%) | RFS HR = 0.67 (p = 7.8699e-03)
+  - **VEGFA**: Overall Survival HR = 1.35, Log-Rank p = 3.6913e-02 (5-yr Surv: High 64.2% vs Low 72.1%) | RFS HR = 1.26 (p = 1.1771e-01)
+  - **MYC**: Overall Survival HR = 0.74, Log-Rank p = 3.7856e-02 (5-yr Surv: High 72.2% vs Low 64.3%) | RFS HR = 0.66 (p = 5.8499e-03)
 
 ## 5. Translational Oncology & Targeted Drug Actionability
 Consensus and survival-validated biomarkers were mapped directly to clinical therapies and mechanisms of action:
