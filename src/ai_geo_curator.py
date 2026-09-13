@@ -136,11 +136,11 @@ def fetch_geo_metadata(accession: str) -> dict:
     has_valid_suppl = False
     suppl_url = None
     raw_read_patterns = ["raw.tar", ".bam", ".sra", ".bw", ".bed", ".bigwig", ".cel", "_reads", "reads.txt", "fastq", "matrix.mtx", "barcodes.tsv"]
-    if table_rows == 0:
+    if table_rows <= 1:
         # Check supplementary files for precomputed count/expression matrices
         for s_file in supplementary_files:
             s_lower = s_file.lower()
-            if any(ext in s_lower for ext in [".txt.gz", ".tsv.gz", ".csv.gz", ".txt", ".tsv", ".csv"]):
+            if any(ext in s_lower for ext in [".txt.gz", ".tsv.gz", ".csv.gz", ".txt", ".tsv", ".csv", ".xlsx", ".xls"]):
                 if not any(bad in s_lower for bad in raw_read_patterns):
                     suppl_url = s_file
                     has_valid_suppl = True
@@ -228,6 +228,11 @@ def curate_with_llm(accession: str, series_title: str, samples: dict, api_key: s
         f"You are an expert bioinformatician. Study GEO accession: {accession} ('{series_title}').\n"
         f"The cohort samples group into the following distinct title/metadata templates:\n"
         f"{json.dumps(template_preview, indent=2)}\n\n"
+        "Instructions:\n"
+        "- Identify the biological comparison.\n"
+        "- Map case, tumor, carcinoma, adenoma, disease, or treated samples to 'Tumor'.\n"
+        "- Map control, normal, adjacent normal, healthy, or untreated baseline samples to 'Normal'.\n"
+        "- Map any ambiguous or non-comparable samples to 'Exclude'.\n\n"
         "Return a JSON object with:\n"
         "1. 'cancer_type': Detected cancer or disease type name (e.g. 'Colorectal Adenoma', 'Non-Small Cell Lung Cancer', 'Breast Carcinoma').\n"
         "2. 'template_labels': A JSON dictionary mapping EVERY template key EXACTLY to 'Tumor' or 'Normal' or 'Exclude'.\n"

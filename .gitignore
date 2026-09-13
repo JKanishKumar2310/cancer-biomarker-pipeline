@@ -12,6 +12,10 @@ data/*
 
 # Temporary scratch scripts & logs
 scratch/
+# Pipeline run output matrices and large CSV tables
+results/*.csv
+!results/.gitkeep
+
 # Synthetic test outputs
 results/synthetic_test/*
 !results/synthetic_test/.gitkeep

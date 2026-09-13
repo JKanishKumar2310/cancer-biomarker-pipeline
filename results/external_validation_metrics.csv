@@ -1,2 +1,0 @@
-discovery_cohort,external_cohort,cancer_type,disease_matched,n_train_samples,n_test_samples,signature_genes_tested,signature_gene_list,test_accuracy,roc_auc,sensitivity,specificity,true_positives,true_negatives,false_positives,false_negatives,data_provenance
-GSE183947 (n=60),"GSE20916 (Colorectal, n=145)",Colorectal Adenoma & Carcinoma (CRC),True,60,145,9,FAM47E-STBD1;SOX7;ANK2;ABCA8;MUC3A;CRYBG3;HOXC4;ZNF709;TK1,0.7172413793103448,0.8473222322232223,0.8316831683168316,0.45454545454545453,84,20,24,17,Authentic NCBI GEO Cross-Cohort Transfer (Zero Retraining)

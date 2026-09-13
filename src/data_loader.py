@@ -403,9 +403,10 @@ def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
         logger.info(f"Loaded: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples across {n_p} patients")
         return expr_df, labels
 
-    # ── Try real GEO series matrix ───────────────────────────
+    # ── Try Universal AI Data Adapter ────────────────────────
     try:
-        expr_df, labels = _load_from_series_matrix()
+        from src.universal_data_adapter import ingest_dataset
+        expr_df, labels = ingest_dataset(acc)
         expr_df.to_csv(acc_expr)
         _save_labels(labels, acc_labels)
         expr_df.to_csv(cache_expr)
@@ -413,11 +414,21 @@ def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
         logger.info(f"Real GEO {acc} data cached for future runs")
         return expr_df, labels
     except Exception as e:
-        logger.error(f"Failed to load authentic GEO series matrix for {acc}: {e}")
-        raise RuntimeError(
-            f"Failed to download or parse authentic GEO data for {acc}: {e}. "
-            "To run with synthetic test data for offline testing, explicitly pass force_synthetic=True."
-        ) from e
+        logger.warning(f"Universal adapter hit issue ({e}), falling back to series matrix parser...")
+        try:
+            expr_df, labels = _load_from_series_matrix()
+            expr_df.to_csv(acc_expr)
+            _save_labels(labels, acc_labels)
+            expr_df.to_csv(cache_expr)
+            _save_labels(labels, cache_labels)
+            logger.info(f"Real GEO {acc} data cached for future runs")
+            return expr_df, labels
+        except Exception as e2:
+            logger.error(f"Failed to load authentic GEO data for {acc}: {e2}")
+            raise RuntimeError(
+                f"Failed to download or parse authentic GEO data for {acc}: {e2}. "
+                "To run with synthetic test data for offline testing, explicitly pass force_synthetic=True."
+            ) from e2
 
 
 if __name__ == "__main__":
