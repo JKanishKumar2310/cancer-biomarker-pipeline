@@ -1,0 +1,2 @@
+discovery_cohort,external_cohort,cancer_type,disease_matched,n_train_samples,n_test_samples,signature_genes_tested,signature_gene_list,test_accuracy,roc_auc,sensitivity,specificity,true_positives,true_negatives,false_positives,false_negatives,data_provenance
+GSE53757 (n=144),"GSE20916 (Colorectal, n=145)",Clear Cell Renal Cell Carcinoma (ccRCC),True,144,145,12,CALB1;EGLN3;ACPP;CLDN8;PFKFB4;ENO2;PDK1;ENPP6;DMRT2;KISS1R;TRIB3;AHNAK2,0.2896551724137931,0.5262151215121512,0.06930693069306931,0.7954545454545454,7,35,9,94,Authentic NCBI GEO Cross-Cohort Transfer (Zero Retraining)
