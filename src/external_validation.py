@@ -89,10 +89,8 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
 
     matrix_file = os.path.join(config.DATA_DIR, f"{ext_acc}_series_matrix.txt.gz")
     annot_file = os.path.join(config.DATA_DIR, f"{info['platform']}.annot.gz")
-    # Derive the annotation URL from the platform with the correct GEO bucket
-    # (the old hardcoded GPL5nnn/GPL570 path 404s - GPL570 actually lives in GPLnnn).
-    from src.ai_geo_curator import gpl_annotation_url
-    annot_url = gpl_annotation_url(info["platform"])
+    # Derive the annotation using unified platform mapping
+    from src.ai_geo_curator import fetch_gpl_probe_mapping
 
     # Download if needed with strict error handling
     import urllib.request
@@ -107,18 +105,6 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
             raise RuntimeError(
                 f"Failed to download authentic external validation cohort {ext_acc} from {info['matrix_url']}: {e}. "
                 "Cross-study validation cannot proceed without authentic cohort data."
-            ) from e
-
-    if not os.path.exists(annot_file):
-        try:
-            logger.info(f"Downloading {info['platform']} annotation table...")
-            urllib.request.urlretrieve(annot_url, annot_file)
-        except Exception as e:
-            if force_synthetic:
-                logger.warning(f"Could not download {info['platform']} annot table: {e}. Using test validation cohort.")
-                return _create_synthetic_external_cohort()
-            raise RuntimeError(
-                f"Failed to download annotation platform {info['platform']} from {annot_url}: {e}."
             ) from e
 
     try:
@@ -159,25 +145,13 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
 
         # Map probes
         logger.info(f"Mapping probes via {info['platform']} annotations...")
-        annot_skip = 0
-        with gzip.open(annot_file, "rt", encoding="utf-8", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if line.startswith("!platform_table_begin"):
-                    annot_skip = i + 1
-                    break
-
-        annot_df = pd.read_csv(
-            annot_file, compression="gzip", skiprows=annot_skip, sep="\t",
-            usecols=["ID", "Gene symbol"], low_memory=False
-        )
-        annot_df = annot_df.dropna(subset=["Gene symbol"])
-        annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
-        annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
-
-        probe_to_gene = dict(zip(annot_df["ID"], annot_df["Gene symbol"]))
-        df["gene"] = df.index.map(probe_to_gene)
-        df = df.dropna(subset=["gene"]).set_index("gene")
-        expr_df = df.groupby(df.index).mean()
+        probe_to_gene = fetch_gpl_probe_mapping(info["platform"])
+        if probe_to_gene:
+            df["gene"] = df.index.astype(str).map(probe_to_gene)
+            df = df.dropna(subset=["gene"]).set_index("gene")
+            expr_df = df.groupby(df.index).mean()
+        else:
+            expr_df = df
 
         common = expr_df.columns.intersection(labels.index)
         expr_df = expr_df[common]

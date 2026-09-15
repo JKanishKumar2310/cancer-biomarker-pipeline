@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
 from src.utils import logger
-from src.ai_geo_curator import gpl_annotation_url, geo_series_stub
+from src.ai_geo_curator import gpl_annotation_url, geo_series_stub, fetch_gpl_probe_mapping
 
 
 def extract_patient_id(title: str, sample_id: str, characteristics: list[str] | None = None) -> str:
@@ -25,14 +25,22 @@ def extract_patient_id(title: str, sample_id: str, characteristics: list[str] | 
     Supports common GEO naming conventions:
       - 'Biopsy of the normal mucosa ... from patient #1' -> 'Patient_001'
       - 'Lung Cancer 2T' / 'Lung Normal 2N' -> 'Patient_002'
-      - 'Normal BC0043N' / 'Cancer BC0043T' -> 'Patient_043'
-      - 'donor: 102548' / 'subject: S01' -> 'Patient_102548'
+      - '2102-Normal' / '2102-Tumor' -> 'Patient_2102'
+      - 'donor: 102548' / 'patient identifier: 2102' -> 'Patient_2102'
     """
-    # Pattern 0: Check characteristics for donor/subject/patient/case
+    stopwords = {"disease", "state", "status", "tissue", "cancer", "tumor", "carcinoma", "normal", "stage", "grade", "group", "type", "history", "characteristics", "sample", "material", "description", "source", "info", "survival", "treatment", "response", "data", "profile"}
+
+    # Pattern 0: Check characteristics for explicit identifier fields
     if characteristics:
         char_str = " ".join(characteristics)
-        m0 = re.search(r'(?:donor|subject|patient|case)[\s_:]+([A-Za-z0-9_-]+)', char_str, re.IGNORECASE)
-        if m0:
+        m0_id = re.search(r'(?:patient|donor|subject|case|sample|pt)[\s_:#]*(?:id|identifier|number|num|code|#)[\s_:#]+([A-Za-z0-9_-]+)', char_str, re.IGNORECASE)
+        if m0_id and m0_id.group(1).lower().strip() not in stopwords:
+            val = m0_id.group(1).strip()
+            digits = re.search(r'\d+', val)
+            return f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{val}"
+
+        m0 = re.search(r'(?:donor|subject|patient|case|pt)[\s_:]+([A-Za-z0-9_-]+)', char_str, re.IGNORECASE)
+        if m0 and m0.group(1).lower().strip() not in stopwords:
             val = m0.group(1).strip()
             digits = re.search(r'\d+', val)
             return f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{val}"
@@ -40,17 +48,24 @@ def extract_patient_id(title: str, sample_id: str, characteristics: list[str] | 
     if not isinstance(title, str):
         return sample_id
 
-    # Pattern 1: patient #1, patient 1
+    # Pattern 1: Title with prefix ID like 2102-Normal, Pt12_Tumor
+    m_title = re.search(r'^([A-Za-z0-9_]+)[\-_](?:normal|tumor|tumour|cancer|adjacent|ca|cap|t|n)$', title.strip(), re.IGNORECASE)
+    if m_title:
+        val = m_title.group(1).strip()
+        digits = re.search(r'\d+', val)
+        return f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{val}"
+
+    # Pattern 2: patient #1, patient 1
     m1 = re.search(r'patient\s*#?\s*(\d+)', title, re.IGNORECASE)
     if m1:
         return f"Patient_{int(m1.group(1)):03d}"
 
-    # Pattern 2: 2T / 2N or Lung Cancer 2T
+    # Pattern 3: 2T / 2N or Lung Cancer 2T
     m2 = re.search(r'(\d+)[TN]\b', title, re.IGNORECASE)
     if m2:
         return f"Patient_{int(m2.group(1)):03d}"
 
-    # Pattern 3: BC0043N / BC0043T
+    # Pattern 4: BC0043N / BC0043T
     m3 = re.search(r'(BC\d+)', title, re.IGNORECASE)
     if m3:
         digits = re.search(r'\d+', m3.group(1))
@@ -150,10 +165,7 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
     # static map only when the metadata does not report one. This makes probe
     # mapping correct for ANY accession, not just the three hardcoded ones.
     gpl_id = platform_from_meta or _PLATFORM_MAP.get(accession, ("GPL570", None))[0]
-    annot_url = gpl_annotation_url(gpl_id)
-    annot_file = os.path.join(config.DATA_DIR, f"{gpl_id}.annot.gz")
-    logger.info(f"Resolved platform {gpl_id} for {accession} (annotation: {annot_url})")
-    _download_if_missing(annot_file, annot_url, f"{gpl_id} annotation table")
+    logger.info(f"Resolved platform {gpl_id} for {accession}")
     # Structure per-sample characteristics dictionary
     sample_chars = {}
     for i, s_id in enumerate(sample_ids):
@@ -209,27 +221,15 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
             df = df.apply(pd.to_numeric, errors="coerce")
 
             # ── Map probes → gene symbols ────────────────────────────
-            if os.path.exists(annot_file) and df.shape[0] > 0:
+            if df.shape[0] > 0 and gpl_id:
                 logger.info(f"Mapping probe IDs to gene symbols via {gpl_id}...")
-                annot_skip = 0
-                with gzip.open(annot_file, "rt", encoding="utf-8", errors="ignore") as f:
-                    for i, line in enumerate(f):
-                        if line.startswith("!platform_table_begin"):
-                            annot_skip = i + 1
-                            break
-
-                annot_df = pd.read_csv(
-                    annot_file, compression="gzip", skiprows=annot_skip, sep="\t",
-                    usecols=["ID", "Gene symbol"], low_memory=False
-                )
-                annot_df = annot_df.dropna(subset=["Gene symbol"])
-                annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
-                annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
-
-                probe_to_gene = dict(zip(annot_df["ID"], annot_df["Gene symbol"]))
-                df["gene"] = df.index.map(probe_to_gene)
-                df = df.dropna(subset=["gene"]).set_index("gene")
-                df_genes = df.groupby(df.index).mean()
+                probe_to_gene = fetch_gpl_probe_mapping(gpl_id)
+                if probe_to_gene:
+                    df["gene"] = df.index.astype(str).map(probe_to_gene)
+                    df = df.dropna(subset=["gene"]).set_index("gene")
+                    df_genes = df.groupby(df.index).mean()
+                else:
+                    df_genes = df
             elif df.shape[0] > 0:
                 df_genes = df
         except Exception as e:
@@ -410,12 +410,18 @@ def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
             labels = labels_df.squeeze()
             labels.attrs["patient_id"] = pd.Series(labels.index, index=labels.index)
 
-        # Keep active expression_matrix.csv in sync with current dataset
-        expr_df.to_csv(cache_expr)
-        _save_labels(labels, cache_labels)
         n_p = labels.attrs["patient_id"].nunique()
-        logger.info(f"Loaded: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples across {n_p} patients")
-        return expr_df, labels
+        sample_genes = [str(x) for x in expr_df.index[:10]]
+        is_stale_probe_cache = all(x.isdigit() for x in sample_genes) or (n_p <= 1 and len(labels) >= 10)
+
+        if not is_stale_probe_cache:
+            # Keep active expression_matrix.csv in sync with current dataset
+            expr_df.to_csv(cache_expr)
+            _save_labels(labels, cache_labels)
+            logger.info(f"Loaded: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples across {n_p} patients")
+            return expr_df, labels
+        else:
+            logger.info(f"Cached {acc} data contains raw probe IDs or legacy patient grouping. Re-ingesting via Universal Data Adapter...")
 
     # ── Try Universal AI Data Adapter ────────────────────────
     try:

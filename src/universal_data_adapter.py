@@ -27,7 +27,7 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
 from src.utils import logger
-from src.ai_geo_curator import fetch_geo_metadata, _download_with_timeout, gpl_annotation_url
+from src.ai_geo_curator import fetch_geo_metadata, _download_with_timeout, gpl_annotation_url, fetch_gpl_probe_mapping
 
 
 # ---------------------------------------------------------------------------
@@ -249,17 +249,40 @@ def match_columns_fuzzy(
             else:
                 cond = "Tumor"  # Default assumption for oncology studies
 
-            # Infer patient ID
-            m_pat = re.search(r'(?:patient|donor|subject|case)[\s_:#]+([A-Za-z0-9_-]+)', meta_str, re.IGNORECASE)
-            if m_pat:
-                pat_val = m_pat.group(1).strip()
+            # Infer patient ID (prevent stopword captures like 'patient disease state')
+            pat_id = None
+            stopwords = {"disease", "state", "status", "tissue", "cancer", "tumor", "carcinoma", "normal", "stage", "grade", "group", "type", "history", "characteristics", "sample", "material", "description", "source", "info", "survival", "treatment", "response", "data", "profile"}
+
+            # Pass 1: Explicit identifier fields (e.g. "patient identifier: 2102", "patient id: 12", "donor id: 5")
+            m_pat_id = re.search(r'(?:patient|donor|subject|case|sample|pt)[\s_:#]*(?:id|identifier|number|num|code|#)[\s_:#]+([A-Za-z0-9_-]+)', meta_str, re.IGNORECASE)
+            if m_pat_id and m_pat_id.group(1).lower().strip() not in stopwords:
+                pat_val = m_pat_id.group(1).strip()
                 digits = re.search(r'\d+', pat_val)
                 pat_id = f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{pat_val}"
-            else:
+
+            # Pass 2: Direct patient/donor tags with digits or alphanumeric codes
+            if not pat_id:
+                m_pat = re.search(r'(?:patient|donor|subject|case|pt)[\s_:#]+([A-Za-z0-9_-]+)', meta_str, re.IGNORECASE)
+                if m_pat:
+                    pat_val = m_pat.group(1).lower().strip()
+                    if pat_val not in stopwords:
+                        digits = re.search(r'\d+', pat_val)
+                        pat_id = f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{pat_val}"
+
+            # Pass 3: Title patterns like "2102-Normal", "Pt12_Tumor", "14T", etc.
+            if not pat_id:
+                m_title = re.search(r'^([A-Za-z0-9_]+)[\-_](?:normal|tumor|tumour|cancer|adjacent|ca|cap|t|n)$', matched_title.strip(), re.IGNORECASE)
+                if m_title:
+                    pat_val = m_title.group(1).strip()
+                    digits = re.search(r'\d+', pat_val)
+                    pat_id = f"Patient_{int(digits.group(0)):03d}" if digits else f"Patient_{pat_val}"
+
+            # Pass 4: Short numbers with T/N or GSM fallback
+            if not pat_id:
                 m_tn = re.search(r'\b(\d+)[tTnN]\b', meta_str)
                 if m_tn:
                     pat_id = f"Patient_{int(m_tn.group(1)):03d}"
-                elif col_digits:
+                elif col_digits and len(col_digits) <= 4:
                     pat_id = f"Patient_{int(col_digits):03d}"
                 else:
                     pat_id = matched_s_id
@@ -443,54 +466,32 @@ def translate_gene_identifiers(df: pd.DataFrame, platform: str) -> pd.DataFrame:
         _warn_if_unrecognized(out, "Ensembl mapping")
         return out
 
-    # Case 2: Microarray Probe IDs (e.g. 205239_at, 1007_s_at, ILMN_1725487)
-    is_probe = any("_at" in x.lower() or "ilmn" in x.lower() for x in idx_sample) or all(x.isdigit() for x in idx_sample[:10])
+    # Case 2: Microarray Probe IDs (e.g. 205239_at, 1007_s_at, ILMN_1725487, or Affy numeric probe clusters)
+    is_probe = any("_at" in x.lower() or "ilmn" in x.lower() for x in idx_sample) or all(str(x).strip().isdigit() for x in idx_sample[:10] if str(x).strip())
     if is_probe and platform:
         logger.info(f"Detected microarray probe IDs. Mapping via platform {platform} annotation...")
         try:
-            annot_path = os.path.join(config.DATA_DIR, f"{platform}.annot.gz")
-            if not os.path.exists(annot_path):
-                annot_url = gpl_annotation_url(platform)
-                logger.info(f"Downloading {platform} platform annotation table from {annot_url}...")
-                _download_with_timeout(annot_url, annot_path, timeout=30)
+            probe_to_gene = fetch_gpl_probe_mapping(platform)
+            if probe_to_gene:
+                df["gene"] = df.index.astype(str).map(probe_to_gene)
+                mapped = df["gene"].notna().mean()
+                df = df.dropna(subset=["gene"])
 
-            annot_skip = 0
-            with gzip.open(annot_path, "rt", encoding="utf-8", errors="ignore") as f:
-                for i, line in enumerate(f):
-                    if line.startswith("!platform_table_begin"):
-                        annot_skip = i + 1
-                        break
+                # Max-Variance probe collapse (Bioconductor WGCNA / Jetset / TidyGEO method)
+                sample_cols = [c for c in df.columns if c != "gene"]
+                probe_vars = df[sample_cols].var(axis=1)
+                df["probe_var"] = probe_vars
+                out = df.sort_values(by="probe_var", ascending=False).drop_duplicates(subset=["gene"]).set_index("gene").drop(columns=["probe_var"])
 
-            annot_df = pd.read_csv(
-                annot_path,
-                sep="\t",
-                skiprows=annot_skip,
-                compression="gzip",
-                low_memory=False,
-                usecols=["ID", "Gene symbol"],
-            )
-            annot_df = annot_df.dropna(subset=["Gene symbol"])
-            annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
-            annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
-
-            probe_to_gene = dict(zip(annot_df["ID"].astype(str), annot_df["Gene symbol"]))
-            df["gene"] = df.index.astype(str).map(probe_to_gene)
-            mapped = df["gene"].notna().mean()
-            df = df.dropna(subset=["gene"])
-
-            # Max-Variance probe collapse (Bioconductor WGCNA / Jetset / TidyGEO method)
-            sample_cols = [c for c in df.columns if c != "gene"]
-            probe_vars = df[sample_cols].var(axis=1)
-            df["probe_var"] = probe_vars
-            out = df.sort_values(by="probe_var", ascending=False).drop_duplicates(subset=["gene"]).set_index("gene").drop(columns=["probe_var"])
-
-            logger.info(f"Mapped {mapped * 100:.1f}% of probe IDs to {len(out)} unique gene symbols via {platform} (Max-Variance collapse)")
-            if mapped < 0.4:
-                logger.warning(
-                    f"Low probe-mapping rate ({mapped * 100:.1f}%) for {platform}. The platform may be "
-                    f"wrong for this dataset - verify !Series_platform_id in the series matrix."
-                )
-            return out
+                logger.info(f"Mapped {mapped * 100:.1f}% of probe IDs to {len(out)} unique gene symbols via {platform} (Max-Variance collapse)")
+                if mapped < 0.4:
+                    logger.warning(
+                        f"Low probe-mapping rate ({mapped * 100:.1f}%) for {platform}. The platform may be "
+                        f"wrong for this dataset - verify !Series_platform_id in the series matrix."
+                    )
+                return out
+            else:
+                logger.warning(f"Could not construct probe mapping dictionary for {platform}. Keeping raw identifiers.")
         except Exception as e:
             logger.warning(f"Probe-to-gene translation failed: {e}. Keeping raw identifiers.")
 

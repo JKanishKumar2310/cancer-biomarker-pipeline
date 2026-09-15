@@ -41,6 +41,9 @@ def run_enrichment(
     if organism is None:
         organism = config.ENRICHMENT_ORGANISM
 
+    # Ensure all gene list items are non-empty strings
+    gene_list = [str(g).strip() for g in gene_list if str(g).strip() and str(g).strip().lower() != "nan"]
+
     logger.info("=" * 60)
     logger.info("PATHWAY ENRICHMENT ANALYSIS")
     logger.info("=" * 60)
@@ -126,7 +129,7 @@ def _create_fallback_enrichment(gene_list: list[str]) -> pd.DataFrame:
     rows = []
     for term, gs, pval, overlap in pathways:
         n_overlap = int(overlap.split("/")[0])
-        selected = gene_list[:min(n_overlap, n_genes)]
+        selected = [str(g) for g in gene_list[:min(n_overlap, n_genes)]]
         rows.append({
             "Term": term,
             "P-value": pval,

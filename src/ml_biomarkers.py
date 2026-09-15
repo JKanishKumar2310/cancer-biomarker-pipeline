@@ -25,7 +25,7 @@ def _make_cv(y: np.ndarray, groups: np.ndarray | None, n_splits: int = None):
     """
     if n_splits is None:
         n_splits = config.N_SPLITS
-    if groups is not None:
+    if groups is not None and len(np.unique(groups)) >= n_splits:
         cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=config.RANDOM_SEED)
         logger.info(f"Using StratifiedGroupKFold ({n_splits} folds) across {len(np.unique(groups))} unique patient groups")
         return cv
@@ -264,10 +264,7 @@ def evaluate_consensus_signature_cv(
         return {}
 
     X_sub = X[:, valid_idx]
-    if groups is not None and len(np.unique(groups)) >= config.N_SPLITS:
-        cv = StratifiedGroupKFold(n_splits=config.N_SPLITS, shuffle=True, random_state=config.RANDOM_SEED)
-    else:
-        cv = StratifiedKFold(n_splits=config.N_SPLITS, shuffle=True, random_state=config.RANDOM_SEED)
+    cv = _make_cv(y, groups, n_splits=config.N_SPLITS)
 
     pipe = Pipeline([
         ("scaler", StandardScaler()),
@@ -341,7 +338,7 @@ def nested_cv_ensemble_evaluation(
             "n_train": int(len(tr)),
             "n_test": int(len(te)),
             "n_selected_genes": len(fold_genes),
-            "selected_genes": ";".join(fold_genes),
+            "selected_genes": ";".join(str(g) for g in fold_genes),
             "fold_accuracy": acc_f,
             "fold_roc_auc": auc_f,
         })

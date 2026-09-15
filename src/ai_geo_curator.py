@@ -59,6 +59,86 @@ def gpl_annotation_url(platform: str) -> str:
     return f"https://ftp.ncbi.nlm.nih.gov/geo/platforms/{stub}/{platform}/annot/{platform}.annot.gz"
 
 
+def fetch_gpl_probe_mapping(platform: str) -> dict[str, str]:
+    """Fetch and parse probe-to-gene symbol mapping for any GPL platform.
+
+    Supports both standard .annot.gz and NCBI CGI view=data fallback,
+    parsing 'Gene symbol', 'gene_assignment', 'mrna_assignment', 'symbol', etc.
+    """
+    import io
+    platform = str(platform).strip().upper()
+    if not platform.startswith("GPL"):
+        return {}
+
+    annot_path = os.path.join(config.DATA_DIR, f"{platform}.annot.gz")
+    raw_tbl_path = os.path.join(config.DATA_DIR, f"{platform}_view_data.txt.gz")
+
+    # 1. Download if missing
+    if not os.path.exists(annot_path) and not os.path.exists(raw_tbl_path):
+        try:
+            url = gpl_annotation_url(platform)
+            logger.info(f"Downloading {platform} annotation table from NCBI FTP: {url}...")
+            _download_with_timeout(url, annot_path, timeout=15)
+        except Exception as e:
+            logger.info(f"NCBI annot FTP not available for {platform} ({e}), falling back to NCBI CGI table...")
+            try:
+                cgi_url = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={platform}&targ=self&form=text&view=data"
+                req = urllib.request.Request(cgi_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = resp.read()
+                with gzip.open(raw_tbl_path, "wb") as f_out:
+                    f_out.write(data)
+            except Exception as cgi_err:
+                logger.warning(f"Could not retrieve platform table for {platform}: {cgi_err}")
+                return {}
+
+    target_file = annot_path if os.path.exists(annot_path) else raw_tbl_path
+    if not os.path.exists(target_file):
+        return {}
+
+    lines = []
+    with gzip.open(target_file, "rt", encoding="utf-8", errors="ignore") as f:
+        found = False
+        for line in f:
+            if "!platform_table_begin" in line.lower():
+                found = True
+                continue
+            if found:
+                if "!platform_table_end" in line.lower():
+                    break
+                lines.append(line)
+
+    if not lines:
+        return {}
+
+    try:
+        df = pd.read_csv(io.StringIO("".join(lines)), sep="\t", low_memory=False)
+    except Exception as parse_err:
+        logger.warning(f"Error parsing platform table for {platform}: {parse_err}")
+        return {}
+
+    id_col = next((c for c in df.columns if c.lower() in ("id", "id_ref", "spot_id", "probe_id")), df.columns[0])
+    sym_col = next((c for c in df.columns if c.lower() in ("gene symbol", "gene_symbol", "symbol", "gene_assignment", "gene", "mrna_assignment")), None)
+    if not sym_col:
+        return {}
+
+    def parse_sym(val):
+        if not isinstance(val, str) or val.strip() in ("", "---", "nan", "null"):
+            return None
+        if "//" in val:
+            parts = val.split("//")
+            if len(parts) >= 2 and parts[1].strip() not in ("", "---"):
+                return parts[1].strip()
+        if "///" in val:
+            return val.split("///")[0].strip()
+        return val.strip()
+
+    df["_parsed_gene"] = df[sym_col].apply(parse_sym)
+    df = df.dropna(subset=["_parsed_gene"])
+    df = df[~df["_parsed_gene"].str.strip().isin(["", "---"])]
+    return dict(zip(df[id_col].astype(str), df["_parsed_gene"]))
+
+
 def geo_series_stub(accession: str) -> str:
     """Build the canonical NCBI GEO series sub-directory stub for a GSE accession.
 
