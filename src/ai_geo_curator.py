@@ -39,9 +39,41 @@ def _download_with_timeout(url: str, dest_path: str, timeout: int = 15):
         raise e
 
 
-def fetch_geo_metadata(accession: str) -> dict:
+def gpl_annotation_url(platform: str) -> str:
+    """Build the canonical NCBI GEO annotation (.annot.gz) URL for any GPL ID.
+
+    GEO buckets platform directories by the numeric ID truncated to the nearest
+    lower thousand (IDs below 1000 live directly in GPLnnn):
+        GPL96    -> GPLnnn
+        GPL570   -> GPLnnn     (still below 1000)
+        GPL10558 -> GPL10nnn
+        GPL13497 -> GPL13nnn
     """
-    Download and parse header metadata of a GEO series matrix.
+    platform = str(platform).strip().upper()
+    num = "".join(ch for ch in platform[3:] if ch.isdigit())
+    if not num:
+        stub = "GPLnnn"
+    else:
+        n = int(num)
+        stub = "GPLnnn" if n < 1000 else f"GPL{n // 1000}nnn"
+    return f"https://ftp.ncbi.nlm.nih.gov/geo/platforms/{stub}/{platform}/annot/{platform}.annot.gz"
+
+
+def geo_series_stub(accession: str) -> str:
+    """Build the canonical NCBI GEO series sub-directory stub for a GSE accession.
+
+        GSE8671  -> GSE8nnn
+        GSE19804 -> GSE19nnn
+    """
+    accession = str(accession).strip().upper()
+    num_part = accession[3:]
+    if len(num_part) < 3:
+        return "GSEnnn"
+    return f"GSE{num_part[:-3]}nnn"
+
+
+def fetch_geo_metadata(accession: str) -> dict:
+    """    Download and parse header metadata of a GEO series matrix.
     Enforces a 15-second download timeout and performs an immediate format check
     to identify incompatible assays (ChIP-seq, ATAC-seq, single-cell raw sequencing, etc.)
     in under 2 seconds.
@@ -56,11 +88,7 @@ def fetch_geo_metadata(accession: str) -> dict:
 
     # Derive URL
     # NCBI structure: GSEnnn -> e.g. GSE8nnn for GSE8671, GSE19nnn for GSE19804
-    num_part = accession[3:]
-    if len(num_part) < 3:
-        stub = "GSEnnn"
-    else:
-        stub = f"GSE{num_part[:-3]}nnn"
+    stub = geo_series_stub(accession)
 
     url = f"https://ftp.ncbi.nlm.nih.gov/geo/series/{stub}/{accession}/matrix/{accession}_series_matrix.txt.gz"
     local_path = os.path.join(config.DATA_DIR, f"{accession}_series_matrix.txt.gz")
@@ -230,6 +258,9 @@ def curate_with_llm(accession: str, series_title: str, samples: dict, api_key: s
         f"{json.dumps(template_preview, indent=2)}\n\n"
         "Instructions:\n"
         "- Identify the biological comparison.\n"
+        f"- The intended contrast is COMPARISON_MODE='{getattr(config, 'COMPARISON_MODE', 'tumor_vs_normal')}'. "
+        f"Map the '{getattr(config, 'GROUP_A_LABEL', 'Tumor')}' group to 'Tumor' and the "
+        f"'{getattr(config, 'GROUP_B_LABEL', 'Normal')}' group to 'Normal'.\n"
         "- Map case, tumor, carcinoma, adenoma, disease, or treated samples to 'Tumor'.\n"
         "- Map control, normal, adjacent normal, healthy, or untreated baseline samples to 'Normal'.\n"
         "- Map any ambiguous or non-comparable samples to 'Exclude'.\n\n"
@@ -318,15 +349,24 @@ def curate_dataset(accession: str) -> dict:
     # Step 2: Fallback for any unassigned samples (or if LLM unavailable)
     unassigned = [s_id for s_id in samples if s_id not in labels]
     if unassigned:
-        tumor_words = [
-            "tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm",
-            "crc", "gbm", "nsclc", "sclc", "luad", "lusc", "brca", "panc", "chol", "prad", "kirc",
-            "glioma", "melanoma", "sarcoma",
-        ]
-        normal_words = [
-            "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "mucosa",
-            "donor", "healthy control", "normal mucosa", "paired normal",
-        ]
+        # Tokens are configurable so subtype / responder / stage contrasts work.
+        # Internal labels stay "Tumor"/"Normal" so the DE + ML stages are unchanged;
+        # GROUP_A maps onto "Tumor" (case/positive) and GROUP_B onto "Normal".
+        tumor_words = list(getattr(config, "GROUP_A_TOKENS", [])) + getattr(
+            config, "CANCER_TYPE_TOKENS", []
+        )
+        normal_words = list(getattr(config, "GROUP_B_TOKENS", []))
+        if not tumor_words or not normal_words:
+            # Fall back to broad oncology defaults if config was not customised.
+            tumor_words = tumor_words or [
+                "tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm",
+                "crc", "gbm", "nsclc", "sclc", "luad", "lusc", "brca", "panc", "chol", "prad", "kirc",
+                "glioma", "melanoma", "sarcoma",
+            ]
+            normal_words = normal_words or [
+                "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "mucosa",
+                "donor", "healthy control", "normal mucosa", "paired normal",
+            ]
         for s_id in unassigned:
             data = samples[s_id]
             title = data["title"]
@@ -357,9 +397,16 @@ def curate_dataset(accession: str) -> dict:
     n_normal = counts.get("Normal", 0)
 
     if n_tumor == 0 or n_normal == 0:
+        mode = getattr(config, "COMPARISON_MODE", "tumor_vs_normal")
         return {
             "success": False,
-            "error": f"Failed to detect comparative groups. Found: {counts}. Study may lack healthy controls or use unstandardized clinical codes.",
+            "error": (
+                f"Failed to detect comparative groups. Found: {counts}. "
+                f"Under COMPARISON_MODE='{mode}', the study may lack a contrasting group, "
+                f"or its sample codes are unstandardized. If this is a subtype or "
+                f"treatment-response cohort, set GROUP_A_TOKENS / GROUP_B_TOKENS in config.py "
+                f"to the tokens used in the dataset's sample titles or characteristics."
+            ),
             "accession": accession,
             "counts": counts,
         }
