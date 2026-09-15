@@ -162,6 +162,42 @@ _VALIDATION_FALLBACKS = {
 }
 
 
+def _resolve_platform(cohort: dict) -> dict:
+    """
+    Verify and correct the platform (GPL ID) reported for an AI-selected cohort.
+
+    The LLM frequently guesses 'GPL570' for every cohort. We instead read the
+    authoritative '!Series_platform_id' line straight from the GEO series matrix,
+    falling back to the LLM value only if the metadata cannot be fetched. A wrong
+    platform silently corrupts probe->gene mapping, so this matters.
+    """
+    acc = cohort.get("accession")
+    if not acc:
+        return cohort
+    llm_platform = str(cohort.get("platform", "")).strip().upper()
+    try:
+        from src.ai_geo_curator import fetch_geo_metadata
+        meta = fetch_geo_metadata(acc)
+        real_platform = str(meta.get("platform", "")).strip().upper() if meta.get("success") else ""
+    except Exception as e:
+        logger.warning(f"  Could not verify platform for {acc}: {e}")
+        real_platform = ""
+
+    if real_platform:
+        if llm_platform and llm_platform != real_platform:
+            logger.warning(
+                f"  AI reported platform {llm_platform} for {acc}, but the series matrix "
+                f"declares {real_platform}. Using the authoritative {real_platform}."
+            )
+        cohort["platform"] = real_platform
+    elif llm_platform:
+        cohort["platform"] = llm_platform
+    else:
+        logger.warning(f"  No platform resolved for {acc}; defaulting to GPL570 (may be wrong).")
+        cohort["platform"] = "GPL570"
+
+    return cohort
+
 def _llm_query_cohort(prompt: str, api_key: str) -> dict | None:
     """Shared helper: send a prompt, parse JSON response."""
     import urllib.request
@@ -206,13 +242,15 @@ def fetch_survival_cohort_from_llm(cancer_type: str, api_key: str) -> dict:
         "Affymetrix microarray preferred, at least 50 patients.\n"
         "Return a JSON object with keys:\n"
         "  'accession': GEO accession (e.g. 'GSE31210')\n"
+        "  'platform': the GEO platform GPL ID (e.g. 'GPL570', 'GPL96', 'GPL10558')\n"
         "  'n': sample count as integer\n"
         "  'endpoint': 'Overall Survival' or 'Relapse-Free Survival'\n"
         "  'label': short human-readable label e.g. 'GSE31210, n=226 (NSCLC, Japan)'"
     )
     result = _llm_query_cohort(prompt, api_key)
     if result and "accession" in result:
-        logger.info(f"  AI selected survival cohort: {result.get('label', result['accession'])}")
+        _resolve_platform(result)
+        logger.info(f"  AI selected survival cohort: {result.get('label', result['accession'])} [{result.get('platform')}]")
         return result
 
     # Fallback: match on cancer_type keywords
@@ -242,12 +280,14 @@ def fetch_validation_cohort_from_llm(cancer_type: str, api_key: str) -> dict:
         "at least 40 patients, different institution from the discovery cohort.\n"
         "Return a JSON object with keys:\n"
         "  'accession': GEO accession (e.g. 'GSE18842')\n"
+        "  'platform': the GEO platform GPL ID (e.g. 'GPL570', 'GPL96', 'GPL10558')\n"
         "  'n': sample count as integer\n"
         "  'label': short human-readable label e.g. 'GSE18842 (NSCLC, n=91)'"
     )
     result = _llm_query_cohort(prompt, api_key)
     if result and "accession" in result:
-        logger.info(f"  AI selected validation cohort: {result.get('label', result['accession'])}")
+        _resolve_platform(result)
+        logger.info(f"  AI selected validation cohort: {result.get('label', result['accession'])} [{result.get('platform')}]")
         return result
 
     # Fallback
@@ -279,8 +319,8 @@ def fetch_cohorts_for_cancer(cancer_type: str) -> dict:
         surv_key = next((k for k in _SURVIVAL_FALLBACKS if k in ct_lower), "default")
         val_key  = next((k for k in _VALIDATION_FALLBACKS if k in ct_lower), "default")
         return {
-            "survival":   _SURVIVAL_FALLBACKS[surv_key],
-            "validation": _VALIDATION_FALLBACKS[val_key],
+            "survival":   dict(_SURVIVAL_FALLBACKS[surv_key]),
+            "validation": dict(_VALIDATION_FALLBACKS[val_key]),
         }
 
     logger.info(f"  Fetching cohorts for: {cancer_type}")

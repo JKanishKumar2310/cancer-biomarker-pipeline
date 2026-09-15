@@ -89,11 +89,10 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
 
     matrix_file = os.path.join(config.DATA_DIR, f"{ext_acc}_series_matrix.txt.gz")
     annot_file = os.path.join(config.DATA_DIR, f"{info['platform']}.annot.gz")
-    annot_url = (
-        "https://ftp.ncbi.nlm.nih.gov/geo/platforms/GPL5nnn/GPL570/annot/GPL570.annot.gz"
-        if info["platform"] == "GPL570"
-        else "https://ftp.ncbi.nlm.nih.gov/geo/platforms/GPLnnn/GPL96/annot/GPL96.annot.gz"
-    )
+    # Derive the annotation URL from the platform with the correct GEO bucket
+    # (the old hardcoded GPL5nnn/GPL570 path 404s - GPL570 actually lives in GPLnnn).
+    from src.ai_geo_curator import gpl_annotation_url
+    annot_url = gpl_annotation_url(info["platform"])
 
     # Download if needed with strict error handling
     import urllib.request
@@ -268,11 +267,26 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
     test_probs = rf.predict_proba(X_test)[:, 1]
 
     acc = accuracy_score(y_test, test_preds)
-    auc = roc_auc_score(y_test, test_probs)
-    tn, fp, fn, tp = confusion_matrix(y_test, test_preds).ravel()
+
+    # Guard against a single-class external cohort (e.g. tumor-only survival set):
+    # ROC-AUC and roc_curve are undefined when only one class is present.
+    if len(np.unique(y_test)) < 2:
+        logger.warning(
+            f"External cohort {info['accession']} contains only one class "
+            f"(y_test unique = {np.unique(y_test).tolist()}); ROC-AUC is undefined. "
+            f"Reporting accuracy only."
+        )
+        auc = float("nan")
+        fpr = np.array([0.0, 1.0])
+        tpr = np.array([0.0, 1.0])
+        tn, fp, fn, tp = 0, 0, 0, 0
+    else:
+        auc = roc_auc_score(y_test, test_probs)
+        tn, fp, fn, tp = confusion_matrix(y_test, test_preds, labels=[0, 1]).ravel()
+        fpr, tpr, _ = roc_curve(y_test, test_probs)
+
     sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-    fpr, tpr, _ = roc_curve(y_test, test_probs)
 
     logger.info(f"\nExternal Cohort Performance (Zero-Shot on {info['accession']}):")
     logger.info(f"  • Test Accuracy: {acc * 100:.2f}%")

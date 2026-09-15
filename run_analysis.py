@@ -144,6 +144,44 @@ def main(force_synthetic: bool = False):
             )
 
 
+def check_accession(accession: str) -> int:
+    """
+    Dry-run triage of a single GEO accession without running the full pipeline.
+
+    Downloads only the series matrix metadata and reports assay compatibility,
+    platform, sample counts and detected group labels. Use this to vet candidate
+    cancer datasets quickly before committing to an 8-stage run.
+
+    Returns a process exit code (0 = usable, 1 = incompatible/unusable).
+    """
+    from src.ai_geo_curator import curate_dataset, fetch_geo_metadata
+    accession = accession.strip().upper()
+    logger.info("╔" + "═" * 58 + "╗")
+    logger.info(f"║  DATASET COMPATIBILITY CHECK: {accession:<29}║")
+    logger.info("╚" + "═" * 58 + "╝")
+
+    meta = fetch_geo_metadata(accession)
+    if not meta.get("success"):
+        logger.error(f"✗ {accession} is NOT usable: {meta.get('error')}")
+        return 1
+    logger.info(f"  Title:          {meta.get('series_title', '(unknown)')}")
+    logger.info(f"  Platform:       {meta.get('platform')}")
+    logger.info(f"  Series types:   {meta.get('series_types')}")
+    logger.info(f"  Samples found:  {len(meta.get('samples', {}))}")
+
+    curation = curate_dataset(accession)
+    if not curation.get("success"):
+        logger.error(f"✗ {accession} could not be curated: {curation.get('error')}")
+        return 1
+    logger.info("")
+    logger.info(f"  Cancer type:    {curation.get('cancer_type')}")
+    logger.info(f"  Group counts:   {curation.get('counts')}")
+    logger.info(f"  Rationale:      {curation.get('rationale')}")
+    logger.info("")
+    logger.info(f"✓ {accession} is USABLE by the pipeline.")
+    logger.info(f"  To run the full pipeline on it, set GEO_ACCESSION='{accession}' in config.py")
+    logger.info(f"  (and adjust CANCER_TYPE / COMPARISON_MODE if needed), then run: python run_analysis.py")
+    return 0
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Cancer Biomarker Discovery Pipeline")
@@ -153,5 +191,15 @@ if __name__ == "__main__":
         dest="test_mode",
         help="Run end-to-end smoke test on synthetic data without downloading large GEO datasets (for CI)",
     )
+    parser.add_argument(
+        "--check",
+        metavar="ACCESSION",
+        dest="check",
+        default=None,
+        help="Dry-run compatibility check of a GEO accession (e.g. --check GSE19804) without running the pipeline",
+    )
     args = parser.parse_args()
+
+    if args.check:
+        sys.exit(check_accession(args.check))
     main(force_synthetic=args.test_mode)

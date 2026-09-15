@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
 from src.utils import logger
+from src.ai_geo_curator import gpl_annotation_url, geo_series_stub
 
 
 def extract_patient_id(title: str, sample_id: str, characteristics: list[str] | None = None) -> str:
@@ -61,9 +62,9 @@ def extract_patient_id(title: str, sample_id: str, characteristics: list[str] | 
 # ── Platform annotation map ─────────────────────────────────
 # Maps GEO accession → (platform GPL ID, annotation URL)
 _PLATFORM_MAP = {
-    "GSE15852": ("GPL96", "https://ftp.ncbi.nlm.nih.gov/geo/platforms/GPLnnn/GPL96/annot/GPL96.annot.gz"),
-    "GSE19804": ("GPL570", "https://ftp.ncbi.nlm.nih.gov/geo/platforms/GPL570nnn/GPL570/annot/GPL570.annot.gz"),
-    "GSE8671": ("GPL570", "https://ftp.ncbi.nlm.nih.gov/geo/platforms/GPL570nnn/GPL570/annot/GPL570.annot.gz"),
+    "GSE15852": ("GPL96", None),
+    "GSE19804": ("GPL570", None),
+    "GSE8671": ("GPL570", None),
 }
 
 # ── Series matrix download URLs ─────────────────────────────
@@ -110,25 +111,30 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
     to gene symbols using the appropriate GPL annotation.
     """
     accession = config.GEO_ACCESSION
-    gpl_id, annot_url = _PLATFORM_MAP.get(accession, ("GPL570", _PLATFORM_MAP["GSE19804"][1]))
+    # Resolve the series matrix URL dynamically (works for any GSE accession).
+    # A static override is still honoured when one is explicitly configured.
+    matrix_url = _MATRIX_URLS.get(
+        accession,
+        f"https://ftp.ncbi.nlm.nih.gov/geo/series/{geo_series_stub(accession)}/{accession}/matrix/{accession}_series_matrix.txt.gz",
+    )
 
     matrix_file = os.path.join(config.DATA_DIR, f"{accession}_series_matrix.txt.gz")
-    annot_file = os.path.join(config.DATA_DIR, f"{gpl_id}.annot.gz")
 
-    # Download if needed
-    if accession in _MATRIX_URLS:
-        _download_if_missing(matrix_file, _MATRIX_URLS[accession], f"{accession} series matrix")
-    _download_if_missing(annot_file, annot_url, f"{gpl_id} annotation table")
+    # Download the series matrix if needed
+    _download_if_missing(matrix_file, matrix_url, f"{accession} series matrix")
 
     # ── Parse metadata ───────────────────────────────────────
     logger.info(f"Parsing sample metadata from {accession} series matrix...")
     meta_lines = []
     skiprows = 0
+    platform_from_meta = None
     with gzip.open(matrix_file, "rt", encoding="utf-8", errors="ignore") as f:
         for i, line in enumerate(f):
             if line.startswith("!series_matrix_table_begin"):
                 skiprows = i + 1
                 break
+            if line.startswith("!Series_platform_id"):
+                platform_from_meta = line.strip().split("\t", 1)[-1].strip(' "')
             meta_lines.append(line)
 
     sample_ids, sample_titles, characteristics = [], [], []
@@ -140,6 +146,14 @@ def _load_from_series_matrix() -> tuple[pd.DataFrame, pd.Series]:
         elif line.startswith("!Sample_characteristics_ch1"):
             characteristics.append([x.strip(' "\t\r\n') for x in line.split("\t")[1:]])
 
+    # Prefer the platform actually declared by the series matrix; fall back to the
+    # static map only when the metadata does not report one. This makes probe
+    # mapping correct for ANY accession, not just the three hardcoded ones.
+    gpl_id = platform_from_meta or _PLATFORM_MAP.get(accession, ("GPL570", None))[0]
+    annot_url = gpl_annotation_url(gpl_id)
+    annot_file = os.path.join(config.DATA_DIR, f"{gpl_id}.annot.gz")
+    logger.info(f"Resolved platform {gpl_id} for {accession} (annotation: {annot_url})")
+    _download_if_missing(annot_file, annot_url, f"{gpl_id} annotation table")
     # Structure per-sample characteristics dictionary
     sample_chars = {}
     for i, s_id in enumerate(sample_ids):
