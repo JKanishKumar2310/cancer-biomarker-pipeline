@@ -53,10 +53,23 @@ def load_results():
     labels_path = os.path.join(config.DATA_DIR, "sample_labels.csv")
     if os.path.exists(expr_path) and os.path.exists(labels_path):
         results["expression"] = pd.read_csv(expr_path, index_col=0)
-        results["labels"] = pd.read_csv(labels_path, index_col=0).squeeze()
+        raw_labels = pd.read_csv(labels_path, index_col=0)
+        if isinstance(raw_labels, pd.DataFrame):
+            if "condition" in raw_labels.columns:
+                results["labels"] = raw_labels["condition"]
+            else:
+                results["labels"] = raw_labels.iloc[:, 0]
+            if "patient_id" in raw_labels.columns:
+                results["patient_id"] = raw_labels["patient_id"]
+            else:
+                results["patient_id"] = pd.Series(raw_labels.index, index=raw_labels.index)
+        else:
+            results["labels"] = raw_labels.squeeze()
+            results["patient_id"] = pd.Series(raw_labels.index, index=raw_labels.index)
     else:
         results["expression"] = pd.DataFrame()
         results["labels"] = pd.Series(dtype=str)
+        results["patient_id"] = pd.Series(dtype=str)
 
     return results
 
@@ -159,9 +172,25 @@ def register_callbacks(app):
         if len(expr) == 0:
             return _empty_figure("No expression data available")
 
-        X = expr.T.values
+        if isinstance(labels, pd.DataFrame):
+            labels = labels["condition"] if "condition" in labels.columns else labels.iloc[:, 0]
+
+        # Align samples present in both expr columns and labels
+        common_samples = [s for s in expr.columns if s in labels.index]
+        if len(common_samples) < 3:
+            common_samples = list(expr.columns)
+            cond_list = [str(labels.get(s, "Sample")) for s in common_samples]
+        else:
+            cond_list = [str(labels.get(s, "Unknown")) for s in common_samples]
+
+        expr_sub = expr[common_samples]
+        X = expr_sub.T.values
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
+
+        n_comp = min(2, X_scaled.shape[0], X_scaled.shape[1])
+        if n_comp < 2:
+            return _empty_figure("Insufficient samples for PCA")
 
         pca = PCA(n_components=2, random_state=config.RANDOM_SEED)
         pcs = pca.fit_transform(X_scaled)
@@ -169,8 +198,8 @@ def register_callbacks(app):
         pca_df = pd.DataFrame({
             "PC1": pcs[:, 0],
             "PC2": pcs[:, 1],
-            "Condition": labels.values,
-            "Sample": labels.index,
+            "Condition": cond_list,
+            "Sample": common_samples,
         })
 
         color_map = {"Tumor": PINK, "Normal": GREEN}
@@ -205,21 +234,35 @@ def register_callbacks(app):
         if len(expr) == 0:
             return _empty_figure("No data available")
 
+        if isinstance(labels, pd.DataFrame):
+            labels = labels["condition"] if "condition" in labels.columns else labels.iloc[:, 0]
+
         # Sample a subset of genes for speed
         sample_genes = expr.sample(min(500, len(expr)), random_state=config.RANDOM_SEED)
 
-        tumor_vals = sample_genes[labels[labels == "Tumor"].index].values.flatten()
-        normal_vals = sample_genes[labels[labels == "Normal"].index].values.flatten()
+        tumor_cols = [s for s in sample_genes.columns if str(labels.get(s, "")).lower() in ("tumor", "cancer", "case", "late stage", "malignant")]
+        normal_cols = [s for s in sample_genes.columns if str(labels.get(s, "")).lower() in ("normal", "healthy", "control", "early stage", "adjacent")]
+
+        if not tumor_cols and not normal_cols:
+            # Fallback split if custom conditions used
+            half = sample_genes.shape[1] // 2
+            tumor_cols = list(sample_genes.columns[:half])
+            normal_cols = list(sample_genes.columns[half:])
+
+        tumor_vals = sample_genes[tumor_cols].values.flatten() if tumor_cols else np.array([])
+        normal_vals = sample_genes[normal_cols].values.flatten() if normal_cols else np.array([])
 
         fig = go.Figure()
-        fig.add_trace(go.Histogram(
-            x=tumor_vals, name="Tumor", marker_color=PINK,
-            opacity=0.7, nbinsx=50,
-        ))
-        fig.add_trace(go.Histogram(
-            x=normal_vals, name="Normal", marker_color=GREEN,
-            opacity=0.7, nbinsx=50,
-        ))
+        if len(tumor_vals) > 0:
+            fig.add_trace(go.Histogram(
+                x=tumor_vals, name="Tumor / Group A", marker_color=PINK,
+                opacity=0.7, nbinsx=50,
+            ))
+        if len(normal_vals) > 0:
+            fig.add_trace(go.Histogram(
+                x=normal_vals, name="Normal / Group B", marker_color=GREEN,
+                opacity=0.7, nbinsx=50,
+            ))
         fig.update_layout(
             **PLOT_LAYOUT_DEFAULTS,
             barmode="overlay",
@@ -291,21 +334,27 @@ def register_callbacks(app):
         if gene not in expr.index:
             return {"display": "none"}, "", go.Figure()
 
+        if isinstance(labels, pd.DataFrame):
+            labels = labels["condition"] if "condition" in labels.columns else labels.iloc[:, 0]
+
         # Gene info
         gene_info = ""
         if gene in de.index:
             row = de.loc[gene]
-            gene_info = f" — log2FC: {row['log2FC']:.2f}, adj p: {row['adj_pvalue']:.2e}, {row['regulation']}"
+            gene_info = f" — log2FC: {row['log2FC']:.2f}, adj p: {row['adj_pvalue']:.2e}, {row.get('regulation', '')}"
 
         # Expression boxplot
         gene_expr = expr.loc[gene]
+        box_samples = [s for s in gene_expr.index]
         box_df = pd.DataFrame({
-            "Expression": gene_expr.values,
-            "Condition": labels[gene_expr.index].values,
+            "Expression": [float(gene_expr[s]) for s in box_samples],
+            "Condition": [str(labels.get(s, "Sample")) for s in box_samples],
         })
 
         fig = go.Figure()
-        for cond, color in [("Normal", GREEN), ("Tumor", PINK)]:
+        unique_conds = box_df["Condition"].unique()
+        for cond in unique_conds:
+            color = PINK if "tumor" in cond.lower() or "case" in cond.lower() else GREEN
             subset = box_df[box_df["Condition"] == cond]
             fig.add_trace(go.Box(
                 y=subset["Expression"], name=cond,
@@ -338,29 +387,45 @@ def register_callbacks(app):
         if len(de) == 0 or len(expr) == 0:
             return _empty_figure("No data available")
 
+        if isinstance(labels, pd.DataFrame):
+            labels = labels["condition"] if "condition" in labels.columns else labels.iloc[:, 0]
+
         # Get top DEGs
-        sig = de[de["regulation"] != "Not Significant"].head(config.TOP_DE_GENES)
-        top_genes = sig.index.tolist()
+        if "regulation" in de.columns:
+            sig = de[de["regulation"] != "Not Significant"].head(config.TOP_DE_GENES)
+        else:
+            sig = de.head(config.TOP_DE_GENES)
+
+        top_genes = sig.index.tolist() if len(sig) > 0 else de.index[:config.TOP_DE_GENES].tolist()
 
         # Filter genes present in expression matrix
         top_genes = [g for g in top_genes if g in expr.index]
+        if len(top_genes) == 0:
+            top_genes = expr.var(axis=1).nlargest(min(50, len(expr))).index.tolist()
         if len(top_genes) == 0:
             return _empty_figure("No matching genes found")
 
         heatmap_data = expr.loc[top_genes]
 
         # Sort samples by condition
-        sorted_samples = labels.sort_values().index
-        sorted_samples = [s for s in sorted_samples if s in heatmap_data.columns]
+        if len(labels) > 0:
+            sorted_samples = [s for s in labels.index if s in heatmap_data.columns]
+            if len(sorted_samples) == 0:
+                sorted_samples = list(heatmap_data.columns)
+            else:
+                sorted_samples = sorted(sorted_samples, key=lambda s: str(labels.get(s, "")))
+        else:
+            sorted_samples = list(heatmap_data.columns)
+
+        if len(sorted_samples) == 0:
+            return _empty_figure("No samples available for heatmap")
+
         heatmap_data = heatmap_data[sorted_samples]
 
         # Z-score normalize across samples for visualization
-        heatmap_z = heatmap_data.sub(heatmap_data.mean(axis=1), axis=0).div(
-            heatmap_data.std(axis=1) + 1e-10, axis=0
-        )
-
-        # Color bar for sample labels
-        sample_colors = [PINK if labels[s] == "Tumor" else GREEN for s in sorted_samples]
+        std = heatmap_data.std(axis=1)
+        std_clamped = np.where(std < 1e-6, 1.0, std)
+        heatmap_z = heatmap_data.sub(heatmap_data.mean(axis=1), axis=0).div(std_clamped, axis=0)
 
         fig = go.Figure(data=go.Heatmap(
             z=heatmap_z.values,
