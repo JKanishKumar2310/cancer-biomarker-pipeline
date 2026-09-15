@@ -314,19 +314,32 @@ def detect_dynamic_contrast(tidy_df: pd.DataFrame) -> tuple[dict[str, str], str]
     if tidy_df.empty:
         return None
 
+    def _is_late_stage(s: str) -> bool:
+        s = str(s).lower().strip()
+        if any(w in s for w in ["iii", "iv", "late", "advanced", "metast"]):
+            return True
+        return bool(re.search(r'\b(?:stage[\s_]*)?(?:3[a-c]?|4[a-b]?)\b', s))
+
+    def _is_early_stage(s: str) -> bool:
+        s = str(s).lower().strip()
+        if any(w in s for w in ["stage i", "stage 1", "stage ii", "stage 2", "early", "localized", "ia", "ib", "ic", "iia", "iib", "iic"]):
+            return True
+        return bool(re.search(r'^(?:i[a-c]?|ii[a-c]?|1[a-c]?|2[a-c]?)$', s))
+
     # Check Stage
     stage_cols = [c for c in tidy_df.columns if "stage" in c]
     for col in stage_cols:
-        vals = tidy_df[col].dropna().astype(str).str.lower()
-        has_late = vals.apply(lambda s: any(x in s for x in ["iii", "iv", "late", "advanced", "metast"])).sum()
-        has_early = vals.apply(lambda s: any(x in s for x in ["stage i", "stage 1", "stage ii", "stage 2", "early", "localized"])).sum()
+        vals = tidy_df[col].dropna().astype(str)
+        late_mask = vals.apply(_is_late_stage)
+        early_mask = vals.apply(_is_early_stage) & ~late_mask
+        has_late = late_mask.sum()
+        has_early = early_mask.sum()
         if has_late >= 3 and has_early >= 3:
             labels = {}
             for s_id, v in tidy_df[col].items():
-                s = str(v).lower()
-                if any(x in s for x in ["iii", "iv", "late", "advanced", "metast"]):
+                if _is_late_stage(v):
                     labels[s_id] = "Tumor"  # Advanced / High-risk case
-                elif any(x in s for x in ["stage i", "stage 1", "stage ii", "stage 2", "early", "localized"]):
+                elif _is_early_stage(v):
                     labels[s_id] = "Normal"  # Early / Low-risk baseline
             return labels, f"Clinical Stage ({col}): Late Stage (n={has_late}) vs Early Stage (n={has_early})"
 
@@ -350,17 +363,37 @@ def detect_dynamic_contrast(tidy_df: pd.DataFrame) -> tuple[dict[str, str], str]
     grade_cols = [c for c in tidy_df.columns if "grade" in c]
     for col in grade_cols:
         vals = tidy_df[col].dropna().astype(str).str.lower()
-        has_high = vals.apply(lambda s: any(x in s for x in ["g3", "g4", "high", "grade 3", "grade 4", "poor"])).sum()
-        has_low = vals.apply(lambda s: any(x in s for x in ["g1", "g2", "low", "grade 1", "grade 2", "well"])).sum()
+        high_mask = vals.apply(lambda s: bool(re.search(r'\b(?:g[34]|grade[\s_]*[34]|high|poorly|3|4)\b', s)))
+        low_mask = vals.apply(lambda s: bool(re.search(r'\b(?:g[12]|grade[\s_]*[12]|low|well|1|2)\b', s))) & ~high_mask
+        has_high = high_mask.sum()
+        has_low = low_mask.sum()
         if has_high >= 3 and has_low >= 3:
             labels = {}
             for s_id, v in tidy_df[col].items():
                 s = str(v).lower()
-                if any(x in s for x in ["g3", "g4", "high", "grade 3", "grade 4", "poor"]):
+                if re.search(r'\b(?:g[34]|grade[\s_]*[34]|high|poorly|3|4)\b', s):
                     labels[s_id] = "Tumor"  # High grade
-                elif any(x in s for x in ["g1", "g2", "low", "grade 1", "grade 2", "well"]):
+                elif re.search(r'\b(?:g[12]|grade[\s_]*[12]|low|well|1|2)\b', s):
                     labels[s_id] = "Normal"  # Low grade
             return labels, f"Tumor Grade ({col}): High Grade (n={has_high}) vs Low Grade (n={has_low})"
+
+    # Check Histological Malignancy / Neoplasm Type (e.g. Malignant vs LMP / Borderline)
+    type_cols = [c for c in tidy_df.columns if any(w in c for w in ["type", "histolog", "diagnosis", "dx", "pathology"])]
+    for col in type_cols:
+        vals = tidy_df[col].dropna().astype(str).str.lower()
+        mal_mask = vals.apply(lambda s: bool(re.search(r'\b(?:malignant|invasive|carcinoma|cancer|adenocarcinoma)\b', s)))
+        ben_mask = vals.apply(lambda s: bool(re.search(r'\b(?:lmp|borderline|low malignant|benign|adenoma|normal)\b', s))) & ~mal_mask
+        has_mal = mal_mask.sum()
+        has_ben = ben_mask.sum()
+        if has_mal >= 3 and has_ben >= 3:
+            labels = {}
+            for s_id, v in tidy_df[col].items():
+                s = str(v).lower()
+                if re.search(r'\b(?:malignant|invasive|carcinoma|cancer|adenocarcinoma)\b', s):
+                    labels[s_id] = "Tumor"
+                elif re.search(r'\b(?:lmp|borderline|low malignant|benign|adenoma|normal)\b', s):
+                    labels[s_id] = "Normal"
+            return labels, f"Histological Malignancy ({col}): Malignant (n={has_mal}) vs LMP/Low-Risk (n={has_ben})"
 
     return None
 

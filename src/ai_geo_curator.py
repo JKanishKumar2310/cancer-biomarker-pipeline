@@ -98,11 +98,30 @@ def fetch_geo_metadata(accession: str) -> dict:
         try:
             _download_with_timeout(url, local_path, timeout=15)
         except Exception as e:
-            return {"success": False, "error": f"NCBI Download Failed: {e}"}
+            # Fallback for multi-platform studies where matrix files are named
+            # e.g. GSE1456-GPL96_series_matrix.txt.gz instead of GSE1456_series_matrix.txt.gz
+            downloaded = False
+            try:
+                dir_url = f"https://ftp.ncbi.nlm.nih.gov/geo/series/{stub}/{accession}/matrix/"
+                req = urllib.request.Request(dir_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode("utf-8", errors="ignore")
+                matches = re.findall(rf'href=[\"\']({accession}[^\"\']*_series_matrix\.txt\.gz)[\"\']', html)
+                if matches:
+                    chosen_file = matches[0]
+                    sub_url = f"{dir_url}{chosen_file}"
+                    logger.info(f"Discovered multi-platform series matrix for {accession}: {chosen_file}")
+                    _download_with_timeout(sub_url, local_path, timeout=30)
+                    downloaded = True
+            except Exception as e_sub:
+                logger.warning(f"Multi-platform series matrix lookup failed for {accession}: {e_sub}")
+            if not downloaded:
+                return {"success": False, "error": f"NCBI Download Failed: {e}"}
 
     # Parse metadata header and verify assay compatibility in < 2 seconds
     meta_lines = []
-    platform = "GPL570"  # default fallback
+    series_platforms = []
+    sample_platforms = []
     series_title = ""
     series_types = []
     supplementary_files = []
@@ -130,11 +149,26 @@ def fetch_geo_metadata(accession: str) -> dict:
                 if stype:
                     series_types.append(stype)
             elif line.startswith("!Series_platform_id"):
-                platform = line.strip().split("\t", 1)[-1].strip(' "')
+                p = line.strip().split("\t", 1)[-1].strip(' "')
+                if p:
+                    series_platforms.append(p)
+            elif line.startswith("!Sample_platform_id"):
+                for p in line.strip().split("\t")[1:]:
+                    p_clean = p.strip(' "')
+                    if p_clean:
+                        sample_platforms.append(p_clean)
             elif line.startswith("!Series_supplementary_file"):
                 supp = line.strip().split("\t", 1)[-1].strip(' "')
                 supplementary_files.append(supp)
             meta_lines.append(line)
+
+    # Resolve platform: prefer the actual platform of samples in the table
+    if sample_platforms:
+        platform = max(set(sample_platforms), key=sample_platforms.count)
+    elif series_platforms:
+        platform = series_platforms[0]
+    else:
+        platform = "GPL570"  # default fallback
 
     # Fast Format & Assay Type Verification (< 2 seconds)
     type_str = " ".join(series_types).lower()
