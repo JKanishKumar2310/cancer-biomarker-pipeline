@@ -74,8 +74,8 @@ def load_results():
     return results
 
 
-# Start in standby mode with empty results until user selects or searches a cohort
-RESULTS = {}
+# Auto-load results at startup so data is immediately available
+RESULTS = load_results()
 
 
 def register_callbacks(app):
@@ -128,7 +128,14 @@ def register_callbacks(app):
          Input("active-cohort-store", "data")],
     )
     def update_stats(_tab, active_cohort):
-        if not active_cohort or not RESULTS.get("de_results", pd.DataFrame()).shape[0]:
+        if not RESULTS.get("de_results", pd.DataFrame()).shape[0]:
+            RESULTS.update(load_results())
+
+        de = RESULTS.get("de_results", pd.DataFrame())
+        consensus = RESULTS.get("consensus", pd.DataFrame())
+        expr = RESULTS.get("expression", pd.DataFrame())
+
+        if not active_cohort or len(de) == 0:
             cards = [
                 make_stat_card("—", "Total Genes", "cyan", 1),
                 make_stat_card("—", "Upregulated", "green", 2),
@@ -137,10 +144,6 @@ def register_callbacks(app):
                 make_stat_card("—", "Samples", "orange", 5),
             ]
             return html.Div(cards, style={"display": "contents"})
-
-        de = RESULTS.get("de_results", pd.DataFrame())
-        consensus = RESULTS.get("consensus", pd.DataFrame())
-        expr = RESULTS.get("expression", pd.DataFrame())
 
         total_genes = len(de) if len(de) > 0 else expr.shape[0]
         n_up = len(de[de["regulation"] == "Upregulated"]) if len(de) > 0 else 0
@@ -166,6 +169,9 @@ def register_callbacks(app):
     def update_pca(tab, active_cohort):
         if tab != "tab-overview" and tab is not None:
             return no_update
+
+        if not RESULTS.get("expression", pd.DataFrame()).shape[0]:
+            RESULTS.update(load_results())
 
         expr = RESULTS.get("expression", pd.DataFrame())
         labels = RESULTS.get("labels", pd.Series(dtype=str))
@@ -230,6 +236,9 @@ def register_callbacks(app):
         if tab != "tab-overview" and tab is not None:
             return no_update
 
+        if not RESULTS.get("expression", pd.DataFrame()).shape[0]:
+            RESULTS.update(load_results())
+
         expr = RESULTS.get("expression", pd.DataFrame())
         labels = RESULTS.get("labels", pd.Series(dtype=str))
 
@@ -285,6 +294,9 @@ def register_callbacks(app):
     def update_volcano(fc_thresh, pval_thresh, active_cohort, tab):
         if tab != "tab-volcano" and tab is not None:
             return no_update
+
+        if not RESULTS.get("de_results", pd.DataFrame()).shape[0]:
+            RESULTS.update(load_results())
 
         de = RESULTS.get("de_results", pd.DataFrame())
 
@@ -389,32 +401,42 @@ def register_callbacks(app):
         if tab != "tab-heatmap" and tab is not None:
             return no_update
 
+        if not RESULTS.get("de_results", pd.DataFrame()).shape[0] or not RESULTS.get("expression", pd.DataFrame()).shape[0]:
+            RESULTS.update(load_results())
+
         de = RESULTS.get("de_results", pd.DataFrame())
         expr = RESULTS.get("expression", pd.DataFrame())
         labels = RESULTS.get("labels", pd.Series(dtype=str))
 
         if len(de) == 0 or len(expr) == 0:
-            return _empty_figure("No data available")
+            return _empty_figure("No dataset loaded. Select a cohort above to view heatmap.")
 
         if isinstance(labels, pd.DataFrame):
             labels = labels["condition"] if "condition" in labels.columns else labels.iloc[:, 0]
 
-        # Get top DEGs
+        # Extract top candidate genes preserving order
         if "regulation" in de.columns:
-            sig = de[de["regulation"] != "Not Significant"].head(config.TOP_DE_GENES)
+            sig = de[de["regulation"] != "Not Significant"]
+            candidate_genes = sig["gene"].dropna().tolist() if "gene" in sig.columns else sig.index.dropna().tolist()
         else:
-            sig = de.head(config.TOP_DE_GENES)
+            candidate_genes = de["gene"].dropna().tolist() if "gene" in de.columns else de.index.dropna().tolist()
 
-        top_genes = sig.index.tolist() if len(sig) > 0 else de.index[:config.TOP_DE_GENES].tolist()
-
-        # Filter genes present in expression matrix
+        # Deduplicate candidate genes preserving order
+        seen = set()
+        top_genes = [g for g in candidate_genes if str(g).strip() and not (g in seen or seen.add(g))][:config.TOP_DE_GENES]
         top_genes = [g for g in top_genes if g in expr.index]
-        if len(top_genes) == 0:
-            top_genes = expr.var(axis=1).nlargest(min(50, len(expr))).index.tolist()
-        if len(top_genes) == 0:
-            return _empty_figure("No matching genes found")
 
-        heatmap_data = expr.loc[top_genes]
+        if len(top_genes) < 5:
+            # Fallback to highest variance genes in expression matrix
+            var_genes = expr.var(axis=1).nlargest(min(config.TOP_DE_GENES, len(expr))).index.tolist()
+            top_genes = list(dict.fromkeys(top_genes + var_genes))[:config.TOP_DE_GENES]
+
+        if len(top_genes) == 0:
+            return _empty_figure("No matching genes found in expression matrix")
+
+        # Deduplicate expr rows on index to guarantee 1:1 mapping
+        expr_unique = expr[~expr.index.duplicated(keep="first")]
+        heatmap_data = expr_unique.reindex([g for g in top_genes if g in expr_unique.index])
 
         # Sort samples by condition
         if len(labels) > 0:
@@ -429,26 +451,31 @@ def register_callbacks(app):
         if len(sorted_samples) == 0:
             return _empty_figure("No samples available for heatmap")
 
-        heatmap_data = heatmap_data[sorted_samples]
+        heatmap_data = heatmap_data[sorted_samples].fillna(0.0)
 
-        # Z-score normalize across samples for visualization
-        std = heatmap_data.std(axis=1)
-        std_clamped = np.where(std < 1e-6, 1.0, std)
-        heatmap_z = heatmap_data.sub(heatmap_data.mean(axis=1), axis=0).div(std_clamped, axis=0)
+        # Z-score normalize across samples
+        row_mean = heatmap_data.mean(axis=1)
+        row_std = heatmap_data.std(axis=1).replace(0, 1.0).fillna(1.0)
+        heatmap_z = heatmap_data.sub(row_mean, axis=0).div(row_std, axis=0).fillna(0.0).clip(-3.0, 3.0)
 
         fig = go.Figure(data=go.Heatmap(
             z=heatmap_z.values,
-            x=sorted_samples,
-            y=top_genes,
+            x=list(sorted_samples),
+            y=heatmap_z.index.tolist(),
             colorscale=[
-                [0, "#2563eb"],
+                [0.0, "#2563eb"],
                 [0.25, "#1e40af"],
                 [0.5, "#0a0a1a"],
                 [0.75, "#b91c1c"],
-                [1, "#ef4444"],
+                [1.0, "#ef4444"],
             ],
-            colorbar=dict(title="Z-score", titleside="right"),
-            hovertemplate="Gene: %{y}<br>Sample: %{x}<br>Z-score: %{z:.2f}<extra></extra>",
+            zmin=-3.0,
+            zmax=3.0,
+            colorbar=dict(
+                title=dict(text="Z-score", side="right", font=dict(color=FONT_COLOR, size=11)),
+                tickfont=dict(color=FONT_COLOR, size=10),
+            ),
+            hovertemplate="Gene: %{y}<br>Sample: %{x}<br>Expression Z-score: %{z:.2f}<extra></extra>",
         ))
 
         fig.update_layout(

@@ -53,14 +53,14 @@ def create_layout():
                 children=[
                     html.H1("🧬 Cancer Biomarker Discovery Dashboard"),
                     html.P(
-                        "Autonomous Discovery Pipeline • Standby: Select or Search a Cohort to Begin",
+                        f"Autonomous Discovery Pipeline • Active Dataset: {config.GEO_ACCESSION} ({config.CANCER_TYPE})",
                         id="dashboard-subtitle",
                         className="subtitle",
                     ),
                 ],
             ),
 
-            dcc.Store(id="active-cohort-store", data=None),
+            dcc.Store(id="active-cohort-store", data={"accession": config.GEO_ACCESSION, "cancer_type": config.CANCER_TYPE}),
 
             # ── AI GEO Dataset Ingestion & Curation Bar ──────
             dbc.Card(
