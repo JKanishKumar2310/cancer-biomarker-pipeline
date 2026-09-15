@@ -172,8 +172,16 @@ def load_survival_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
     df = df.apply(pd.to_numeric, errors="coerce")
 
     # Map probe IDs using platform annotations
-    if os.path.exists(annot_file):
-        logger.info(f"Mapping {target_acc} probes via {platform} annotations...")
+    from src.ai_geo_curator import fetch_gpl_probe_mapping
+    probe_to_gene = fetch_gpl_probe_mapping(platform)
+    if probe_to_gene:
+        logger.info(f"Mapping {target_acc} probes via {platform} annotations ({len(probe_to_gene)} mapped)...")
+        df.index = df.index.astype(str).str.strip()
+        df["gene"] = df.index.map(lambda x: probe_to_gene.get(x) or probe_to_gene.get(str(x)))
+        df = df.dropna(subset=["gene"]).set_index("gene")
+        expr_df = df.groupby(df.index).mean()
+    elif os.path.exists(annot_file):
+        logger.info(f"Mapping {target_acc} probes via local {platform} annotations...")
         annot_skip = 0
         with gzip.open(annot_file, "rt", encoding="utf-8", errors="ignore") as f:
             for i, line in enumerate(f):
@@ -189,7 +197,8 @@ def load_survival_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
         annot_df = annot_df[~annot_df["Gene symbol"].str.strip().isin(["", "---"])]
         annot_df["Gene symbol"] = annot_df["Gene symbol"].apply(lambda x: str(x).split("///")[0].strip())
 
-        probe_to_gene = dict(zip(annot_df["ID"], annot_df["Gene symbol"]))
+        probe_to_gene = dict(zip(annot_df["ID"].astype(str), annot_df["Gene symbol"]))
+        df.index = df.index.astype(str).str.strip()
         df["gene"] = df.index.map(probe_to_gene)
         df = df.dropna(subset=["gene"]).set_index("gene")
         expr_df = df.groupby(df.index).mean()

@@ -138,12 +138,14 @@ def match_columns_with_ai(
     }
 
     try:
+        from src.ai_annotator import _safe_parse_llm_json
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
         with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            return parsed.get("column_mappings")
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0]["message"]["content"]
+                parsed = _safe_parse_llm_json(content)
+                return parsed.get("column_mappings")
     except Exception as e:
         logger.warning(f"AI column matching query failed or timed out: {e}. Using generalized fuzzy matcher.")
         return None

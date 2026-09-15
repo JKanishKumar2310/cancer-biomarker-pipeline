@@ -50,20 +50,21 @@ def remove_low_variance_genes(expr_df: pd.DataFrame) -> pd.DataFrame:
 
 def quantile_normalize(expr_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Quantile normalization across samples.
+    Fast, memory-efficient Quantile Normalization across samples.
     Ensures all samples have the same distribution of expression values.
     """
     logger.info("Applying quantile normalization...")
+    # Impute missing values with row median if any exist
+    if expr_df.isna().any().any():
+        expr_df = expr_df.apply(lambda row: row.fillna(row.median()), axis=1).fillna(0.0)
 
-    rank_mean = expr_df.stack().groupby(
-        expr_df.rank(method="first").stack().astype(int)
-    ).mean()
+    vals = expr_df.values.astype(float)
+    sorted_vals = np.sort(vals, axis=0)
+    rank_means = np.mean(sorted_vals, axis=1)
+    ranks = np.argsort(np.argsort(vals, axis=0), axis=0)
+    normalized_vals = rank_means[ranks]
 
-    normalized = expr_df.rank(method="min").stack().astype(int).map(rank_mean).unstack()
-    normalized.index = expr_df.index
-    normalized.columns = expr_df.columns
-
-    return normalized
+    return pd.DataFrame(normalized_vals, index=expr_df.index, columns=expr_df.columns)
 
 
 def collapse_probes_to_genes(expr_df: pd.DataFrame) -> pd.DataFrame:

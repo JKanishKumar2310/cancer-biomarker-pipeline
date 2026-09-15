@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "path": "plugins/get-shit-done"
+    },
+    {
+      "path": "plugins/roo-code"
+    },
+    {
+      "path": "plugins/ralph-loop"
+    },
+    {
+      "path": "plugins/coderabbit"
+    }
+  ]
+}

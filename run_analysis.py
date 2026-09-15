@@ -30,6 +30,7 @@ from src.ai_annotator import annotate_biomarkers, generate_summary_report, fetch
 from src.survival_analysis import run_survival_pipeline
 from src.external_validation import run_external_validation
 from src.drug_mapping import map_biomarkers_to_drugs
+from src.genomic_annotator import integrate_multi_omics
 
 
 def main(force_synthetic: bool = False):
@@ -104,9 +105,17 @@ def main(force_synthetic: bool = False):
     ext_val = run_external_validation(force_synthetic=force_synthetic)
     logger.info("")
 
-    # ── Step 8: Drug Mapping & AI Annotation ─────────────────
-    logger.info("STEP 8/8: Targeted drug mapping & biological summary...")
+    # ── Step 8: Drug Mapping, Multi-Omics & AI Annotation ─────
+    logger.info("STEP 8/8: Targeted drug mapping, multi-omics & biological summary...")
     drugs_df = map_biomarkers_to_drugs(consensus)
+    try:
+        integrate_multi_omics(
+            de_file=os.path.join(config.RESULTS_DIR, "de_results.csv"),
+            cancer_type=config.CANCER_TYPE,
+            output_file=os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv"),
+        )
+    except Exception as e:
+        logger.warning(f"Multi-omics integration skipped: {e}")
     annotated = annotate_biomarkers(consensus)
     summary = generate_summary_report(de_results, consensus, annotated)
     logger.info("")

@@ -175,7 +175,7 @@ def run_differential_expression(
     # Add -log10(adj_pvalue) for volcano plot
     de_results["neg_log10_pval"] = -np.log10(
         de_results["adj_pvalue"].clip(lower=1e-300)
-    )
+    ).fillna(0.0)
 
     # Biological mechanism annotation for hallmark cancer genes
     mutation_drivers = {"KRAS", "TP53", "APC", "BRAF", "PIK3CA", "PTEN", "NRAS", "EGFR", "SMAD4"}
@@ -231,6 +231,8 @@ def _sanity_check(de_results: pd.DataFrame) -> None:
     for marker in config.KNOWN_MARKERS:
         if marker in de_results.index:
             row = de_results.loc[marker]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
             status = row["regulation"]
             fc = row["log2FC"]
             p = row["adj_pvalue"]

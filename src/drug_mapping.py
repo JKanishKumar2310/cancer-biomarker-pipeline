@@ -6,6 +6,9 @@ investigational agents, mechanisms of action, and clinical indications.
 """
 import os
 import sys
+import re
+import json
+import urllib.request
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -198,12 +201,20 @@ def _fetch_drugs_from_llm(genes: list[str], cancer_type: str) -> dict:
     }
     try:
         req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            return json.loads(result["choices"][0]["message"]["content"])
+            if "choices" in result and len(result["choices"]) > 0:
+                raw = result["choices"][0]["message"]["content"]
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+                try:
+                    return json.loads(clean)
+                except Exception:
+                    m = re.search(r"\{.*\}", clean, re.DOTALL)
+                    if m:
+                        return json.loads(m.group(0))
     except Exception as e:
         logger.warning(f"  AI drug fetch failed: {e}")
-        return {}
+    return {}
 
 
 def map_biomarkers_to_drugs(biomarkers_df: pd.DataFrame = None) -> pd.DataFrame:

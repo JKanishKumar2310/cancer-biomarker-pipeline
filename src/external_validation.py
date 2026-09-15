@@ -84,7 +84,12 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
     if os.path.exists(cache_expr) and os.path.exists(cache_labels):
         logger.info(f"Loading cached {ext_acc} external validation cohort...")
         expr_df = pd.read_csv(cache_expr, index_col=0)
-        labels = pd.read_csv(cache_labels, index_col=0).squeeze()
+        raw_labels = pd.read_csv(cache_labels, index_col=0)
+        if isinstance(raw_labels, pd.DataFrame):
+            col = "condition" if "condition" in raw_labels.columns else raw_labels.columns[0]
+            labels = raw_labels[col]
+        else:
+            labels = raw_labels.squeeze()
         return expr_df, labels
 
     matrix_file = os.path.join(config.DATA_DIR, f"{ext_acc}_series_matrix.txt.gz")

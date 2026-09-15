@@ -1053,157 +1053,162 @@ def register_callbacks(app):
                     )
                 )
 
-        # ── Multi-Omics Callbacks ──────────────────────────────
-        @app.callback(
-            Output("multiomics-scatter-plot", "figure"),
-            Input("main-tabs", "active_tab"),
-        )
-        def update_multiomics_scatter(tab):
-            mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
-            if not os.path.exists(mo_path):
-                return _empty_figure("No Multi-Omics integration data found. Run multi-omics analysis.")
-            df = pd.read_csv(mo_path)
-            if df.empty:
-                return _empty_figure("Multi-Omics table is empty.")
-
-            fig = go.Figure()
-
-            # Group by badge category
-            badge_styles = {
-                "[DUAL-OMICS]": {"color": "#f43f5e", "name": "Dual Omics (RNA + DNA)", "symbol": "diamond", "size": 14},
-                "[MUTATION-ONLY]": {"color": "#f59e0b", "name": "Pure Genomic (Jammed Pedal)", "symbol": "circle", "size": 13},
-                "[RNA-DRIVEN]": {"color": "#06b6d4", "name": "Pure Transcriptomic (Stromal/ECM)", "symbol": "square", "size": 12},
-                "[MINOR]": {"color": "#94a3b8", "name": "Sub-threshold", "symbol": "circle-open", "size": 8},
-            }
-
-            for badge, style in badge_styles.items():
-                sub = df[df["badge"] == badge]
-                if sub.empty:
-                    continue
-                hover_text = [
-                    f"<b>Gene: {row['gene']}</b> ({row['cancer_type']})<br>"
-                    f"Mutation Frequency: <b>{row['mutation_frequency_pct']}%</b><br>"
-                    f"RNA Log2FC: <b>{row['rna_log2fc']}</b> ({row['rna_status']})<br>"
-                    f"Alteration: {row['alteration_type']}<br>"
-                    f"Hotspots: {row['hotspot_alterations']}<br>"
-                    f"Targeted Drug: {row['targeted_therapies']}"
-                    for _, row in sub.iterrows()
-                ]
-                fig.add_trace(go.Scatter(
-                    x=sub["rna_log2fc"],
-                    y=sub["mutation_frequency_pct"],
-                    mode="markers+text",
-                    text=sub["gene"],
-                    textposition="top center",
-                    textfont=dict(size=10, color=FONT_COLOR),
-                    name=style["name"],
-                    hoverinfo="text",
-                    hovertext=hover_text,
-                    marker=dict(
-                        size=style["size"],
-                        color=style["color"],
-                        symbol=style["symbol"],
-                        line=dict(width=1, color="#ffffff"),
-                    ),
-                ))
-
-            # Threshold reference lines
-            fig.add_vline(x=1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Up Cutoff (Log2FC=1)", annotation_font_size=9, annotation_font_color="#a0a0b0")
-            fig.add_vline(x=-1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Down Cutoff (Log2FC=-1)", annotation_font_size=9, annotation_font_color="#a0a0b0")
-            fig.add_hline(y=5.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Recurrent Mutation Cutoff (5%)", annotation_font_size=9, annotation_font_color="#a0a0b0")
-
-            # Region Annotations
-            fig.add_annotation(
-                x=0, y=df["mutation_frequency_pct"].max() * 0.95,
-                text="<b>🔒 Jammed Gas Pedals</b><br>High Mutations & Flat RNA<br>(EGFR, KRAS, BRAF, TP53)",
-                showarrow=False,
-                font=dict(size=11, color="#f59e0b"),
-                bgcolor="rgba(245, 158, 11, 0.12)",
-                bordercolor="rgba(245, 158, 11, 0.4)",
-                borderwidth=1,
-                borderpad=4,
-            )
-
-            fig.update_layout(
-                **PLOT_LAYOUT_DEFAULTS,
-                title="Cross-Omics Landscape: Transcriptomic Fold-Change vs. DNA Mutation Frequency",
-                xaxis_title="Transcriptomic Log2 Fold Change (Tumor vs Normal)",
-                yaxis_title="DNA Somatic Mutation Frequency (% in Cancer)",
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1,
-                    font=dict(color=FONT_COLOR, size=10),
-                ),
-                height=520,
-            )
-            return fig
-
-        @app.callback(
-            Output("multiomics-table-content", "children"),
-            Input("main-tabs", "active_tab"),
-        )
-        def update_multiomics_table(tab):
-            mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
-            if not os.path.exists(mo_path):
-                return html.Div("No multi-omics data available.", className="text-muted p-3")
-            df = pd.read_csv(mo_path)
-            if df.empty:
-                return html.Div("Multi-omics table is empty.", className="text-muted p-3")
-
-            rows = []
-            for _, r in df.iterrows():
-                badge = str(r.get("badge", ""))
-                if "DUAL" in badge:
-                    badge_color = "danger"
-                elif "MUTATION" in badge:
-                    badge_color = "warning"
-                elif "RNA" in badge:
-                    badge_color = "info"
-                else:
-                    badge_color = "secondary"
-
-                rows.append(
-                    html.Tr([
-                        html.Td(html.B(r["gene"]), style={"color": CYAN}),
-                        html.Td(dbc.Badge(r.get("badge", ""), color=badge_color, className="px-2 py-1")),
-                        html.Td(f"{r['mutation_frequency_pct']}%", style={"fontWeight": "600", "color": "#fbbf24" if r['mutation_frequency_pct'] >= 5 else FONT_COLOR}),
-                        html.Td(f"{r['rna_log2fc']:+.2f}", style={"color": "#4ade80" if r['rna_log2fc'] > 0 else "#f43f5e" if r['rna_log2fc'] < 0 else FONT_COLOR}),
-                        html.Td(r.get("rna_status", "N/A"), style={"fontSize": "0.85rem"}),
-                        html.Td(r.get("hotspot_alterations", "N/A"), style={"fontSize": "0.82rem", "maxWidth": "220px", "wordBreak": "break-word"}),
-                        html.Td(r.get("targeted_therapies", "None"), style={"fontSize": "0.85rem", "color": "#38bdf8"}),
-                        html.Td(dbc.Badge(r.get("clinical_tier", "Tier 2"), color="dark", className="border text-light", style={"fontSize": "0.75rem"})),
-                    ])
-                )
-
-            table = dbc.Table(
-                [
-                    html.Thead(
-                        html.Tr([
-                            html.Th("Gene"),
-                            html.Th("Omics Class"),
-                            html.Th("DNA Mut %"),
-                            html.Th("RNA Log2FC"),
-                            html.Th("RNA Status"),
-                            html.Th("Hotspot Alterations / Fusions"),
-                            html.Th("Targeted Therapies"),
-                            html.Th("Clinical Tier"),
-                        ])
-                    ),
-                    html.Tbody(rows),
-                ],
-                bordered=False,
-                hover=True,
-                responsive=True,
-                striped=True,
-                className="table-dark table-sm align-middle mt-2",
-                style={"backgroundColor": "transparent"},
-            )
-            return table
-
         return rendered_messages, history, ""
+
+
+    # ── Multi-Omics Callbacks ──────────────────────────────
+    @app.callback(
+        Output("multiomics-scatter-plot", "figure"),
+        Input("main-tabs", "active_tab"),
+    )
+    def update_multiomics_scatter(tab):
+        if tab != "tab-multiomics":
+            return no_update
+        mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
+        if not os.path.exists(mo_path):
+            return _empty_figure("No Multi-Omics integration data found. Run multi-omics analysis.")
+        df = pd.read_csv(mo_path)
+        if df.empty:
+            return _empty_figure("Multi-Omics table is empty.")
+
+        fig = go.Figure()
+
+        # Group by badge category
+        badge_styles = {
+            "[DUAL-OMICS]": {"color": "#f43f5e", "name": "Dual Omics (RNA + DNA)", "symbol": "diamond", "size": 14},
+            "[MUTATION-ONLY]": {"color": "#f59e0b", "name": "Pure Genomic (Jammed Pedal)", "symbol": "circle", "size": 13},
+            "[RNA-DRIVEN]": {"color": "#06b6d4", "name": "Pure Transcriptomic (Stromal/ECM)", "symbol": "square", "size": 12},
+            "[MINOR]": {"color": "#94a3b8", "name": "Sub-threshold", "symbol": "circle-open", "size": 8},
+        }
+
+        for badge, style in badge_styles.items():
+            sub = df[df["badge"] == badge]
+            if sub.empty:
+                continue
+            hover_text = [
+                f"<b>Gene: {row['gene']}</b> ({row['cancer_type']})<br>"
+                f"Mutation Frequency: <b>{row['mutation_frequency_pct']}%</b><br>"
+                f"RNA Log2FC: <b>{row['rna_log2fc']}</b> ({row['rna_status']})<br>"
+                f"Alteration: {row['alteration_type']}<br>"
+                f"Hotspots: {row['hotspot_alterations']}<br>"
+                f"Targeted Drug: {row['targeted_therapies']}"
+                for _, row in sub.iterrows()
+            ]
+            fig.add_trace(go.Scatter(
+                x=sub["rna_log2fc"],
+                y=sub["mutation_frequency_pct"],
+                mode="markers+text",
+                text=sub["gene"],
+                textposition="top center",
+                textfont=dict(size=10, color=FONT_COLOR),
+                name=style["name"],
+                hoverinfo="text",
+                hovertext=hover_text,
+                marker=dict(
+                    size=style["size"],
+                    color=style["color"],
+                    symbol=style["symbol"],
+                    line=dict(width=1, color="#ffffff"),
+                ),
+            ))
+
+        # Threshold reference lines
+        fig.add_vline(x=1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Up Cutoff (Log2FC=1)", annotation_font_size=9, annotation_font_color="#a0a0b0")
+        fig.add_vline(x=-1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Down Cutoff (Log2FC=-1)", annotation_font_size=9, annotation_font_color="#a0a0b0")
+        fig.add_hline(y=5.0, line_dash="dash", line_color="rgba(255,255,255,0.25)", annotation_text="Recurrent Mutation Cutoff (5%)", annotation_font_size=9, annotation_font_color="#a0a0b0")
+
+        # Region Annotations
+        fig.add_annotation(
+            x=0, y=df["mutation_frequency_pct"].max() * 0.95,
+            text="<b>🔒 Jammed Gas Pedals</b><br>High Mutations & Flat RNA<br>(EGFR, KRAS, BRAF, TP53)",
+            showarrow=False,
+            font=dict(size=11, color="#f59e0b"),
+            bgcolor="rgba(245, 158, 11, 0.12)",
+            bordercolor="rgba(245, 158, 11, 0.4)",
+            borderwidth=1,
+            borderpad=4,
+        )
+
+        fig.update_layout(
+            **PLOT_LAYOUT_DEFAULTS,
+            title="Cross-Omics Landscape: Transcriptomic Fold-Change vs. DNA Mutation Frequency",
+            xaxis_title="Transcriptomic Log2 Fold Change (Tumor vs Normal)",
+            yaxis_title="DNA Somatic Mutation Frequency (% in Cancer)",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(color=FONT_COLOR, size=10),
+            ),
+            height=520,
+        )
+        return fig
+
+    @app.callback(
+        Output("multiomics-table-content", "children"),
+        Input("main-tabs", "active_tab"),
+    )
+    def update_multiomics_table(tab):
+        if tab != "tab-multiomics":
+            return no_update
+        mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
+        if not os.path.exists(mo_path):
+            return html.Div("No multi-omics data available.", className="text-muted p-3")
+        df = pd.read_csv(mo_path)
+        if df.empty:
+            return html.Div("Multi-omics table is empty.", className="text-muted p-3")
+
+        rows = []
+        for _, r in df.iterrows():
+            badge = str(r.get("badge", ""))
+            if "DUAL" in badge:
+                badge_color = "danger"
+            elif "MUTATION" in badge:
+                badge_color = "warning"
+            elif "RNA" in badge:
+                badge_color = "info"
+            else:
+                badge_color = "secondary"
+
+            rows.append(
+                html.Tr([
+                    html.Td(html.B(r["gene"]), style={"color": CYAN}),
+                    html.Td(dbc.Badge(r.get("badge", ""), color=badge_color, className="px-2 py-1")),
+                    html.Td(f"{r['mutation_frequency_pct']}%", style={"fontWeight": "600", "color": "#fbbf24" if r['mutation_frequency_pct'] >= 5 else FONT_COLOR}),
+                    html.Td(f"{r['rna_log2fc']:+.2f}", style={"color": "#4ade80" if r['rna_log2fc'] > 0 else "#f43f5e" if r['rna_log2fc'] < 0 else FONT_COLOR}),
+                    html.Td(r.get("rna_status", "N/A"), style={"fontSize": "0.85rem"}),
+                    html.Td(r.get("hotspot_alterations", "N/A"), style={"fontSize": "0.82rem", "maxWidth": "220px", "wordBreak": "break-word"}),
+                    html.Td(r.get("targeted_therapies", "None"), style={"fontSize": "0.85rem", "color": "#38bdf8"}),
+                    html.Td(dbc.Badge(r.get("clinical_tier", "Tier 2"), color="dark", className="border text-light", style={"fontSize": "0.75rem"})),
+                ])
+            )
+
+        table = dbc.Table(
+            [
+                html.Thead(
+                    html.Tr([
+                        html.Th("Gene"),
+                        html.Th("Omics Class"),
+                        html.Th("DNA Mut %"),
+                        html.Th("RNA Log2FC"),
+                        html.Th("RNA Status"),
+                        html.Th("Hotspot Alterations / Fusions"),
+                        html.Th("Targeted Therapies"),
+                        html.Th("Clinical Tier"),
+                    ])
+                ),
+                html.Tbody(rows),
+            ],
+            bordered=False,
+            hover=True,
+            responsive=True,
+            striped=True,
+            className="table-dark table-sm align-middle mt-2",
+            style={"backgroundColor": "transparent"},
+        )
+        return table
 
 
 def _empty_figure(message: str) -> go.Figure:

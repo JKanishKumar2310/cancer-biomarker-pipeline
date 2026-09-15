@@ -403,9 +403,13 @@ def load_data(force_synthetic: bool = False) -> tuple[pd.DataFrame, pd.Series]:
         logger.info(f"Loading cached {acc} data...")
         expr_df = pd.read_csv(acc_expr, index_col=0)
         labels_df = pd.read_csv(acc_labels, index_col=0)
-        if "patient_id" in labels_df.columns:
-            labels = labels_df["condition"]
-            labels.attrs["patient_id"] = labels_df["patient_id"]
+        if isinstance(labels_df, pd.DataFrame):
+            col = "condition" if "condition" in labels_df.columns else labels_df.columns[0]
+            labels = labels_df[col]
+            if "patient_id" in labels_df.columns:
+                labels.attrs["patient_id"] = labels_df["patient_id"]
+            else:
+                labels.attrs["patient_id"] = pd.Series(labels_df.index, index=labels_df.index)
         else:
             labels = labels_df.squeeze()
             labels.attrs["patient_id"] = pd.Series(labels.index, index=labels.index)

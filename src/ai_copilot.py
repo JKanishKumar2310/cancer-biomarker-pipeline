@@ -170,7 +170,10 @@ def query_ai_copilot(user_query: str, chat_history: list = None) -> str:
             req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=12) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                return data["choices"][0]["message"]["content"].strip()
+                if "choices" in data and len(data["choices"]) > 0:
+                    return data["choices"][0]["message"]["content"].strip()
+                elif "error" in data:
+                    raise RuntimeError(data["error"].get("message", "API error"))
         except Exception as e:
             last_err = e
             if attempt == 0:

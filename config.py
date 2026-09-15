@@ -3,6 +3,24 @@ Central configuration for the Cancer Biomarker Discovery Pipeline.
 All tunable parameters are defined here for reproducibility.
 """
 import os
+import sys
+import warnings
+
+# Ensure UTF-8 console output on Windows to prevent UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# Suppress scikit-learn / urllib future deprecation notices for clean logs
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 # ============================================================
 # Paths
@@ -25,9 +43,6 @@ if os.path.exists(env_path):
                 k, v = line.split("=", 1)
                 os.environ[k.strip()] = v.strip()
 
-# ============================================================
-# Dataset
-# ============================================================
 # ============================================================
 # Dataset
 # ============================================================
