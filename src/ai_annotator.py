@@ -561,14 +561,25 @@ def annotate_biomarkers(
     batch_results = annotate_genes_batch(genes_data, api_key, model)
 
     annotations = []
-    for item in genes_data:
-        gene_name = item["gene"]
-        if gene_name in batch_results:
-            annotations.append(batch_results[gene_name])
-        else:
-            # Fallback for any missing individual gene
-            ann = annotate_gene(gene_name, item, api_key, model)
-            annotations.append(ann)
+    if not batch_results:
+        logger.warning("  Batch AI request failed/rate-limited — using instant candidate annotations")
+        cancer_desc = getattr(config, "CANCER_TYPE", "cancer")
+        for item in genes_data:
+            gene_name = item["gene"]
+            reg = item.get("regulation", "differentially expressed")
+            fc = item.get("log2FC", 0)
+            annotations.append(
+                f"{gene_name} is a high-ranking consensus candidate biomarker identified in {cancer_desc} "
+                f"({reg}, log2FC = {fc:+.2f}). Cross-reference with PubMed or UniProt for target validation."
+            )
+    else:
+        for item in genes_data:
+            gene_name = item["gene"]
+            if gene_name in batch_results:
+                annotations.append(batch_results[gene_name])
+            else:
+                ann = annotate_gene(gene_name, item, api_key, model)
+                annotations.append(ann)
 
     # Add annotations to DataFrame
     annotated_df = consensus_df.head(max_genes).copy()

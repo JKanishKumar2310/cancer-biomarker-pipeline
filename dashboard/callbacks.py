@@ -852,6 +852,7 @@ def register_callbacks(app):
             Output("geo-accession-input", "value"),
         ],
         [
+            Input("btn-quick-gse53757", "n_clicks"),
             Input("btn-quick-gse8671", "n_clicks"),
             Input("btn-quick-gse19804", "n_clicks"),
             Input("btn-quick-gse15852", "n_clicks"),
@@ -861,7 +862,7 @@ def register_callbacks(app):
         State("geo-accession-input", "value"),
         prevent_initial_call=True,
     )
-    def handle_cohort_actions(c_colon, c_lung, c_breast, c_reset, c_run, accession_input):
+    def handle_cohort_actions(c_kidney, c_colon, c_lung, c_breast, c_reset, c_run, accession_input):
         triggered = ctx.triggered_id
         if not triggered:
             return no_update, no_update, no_update, no_update
@@ -869,6 +870,13 @@ def register_callbacks(app):
         if triggered == "btn-reset-cohort":
             RESULTS.clear()
             return None, "Autonomous Discovery Pipeline • Standby: Select or Search a Cohort to Begin", dbc.Alert("🔄 Platform reset to standby mode. Select a cohort above to begin.", color="secondary", dismissable=True), ""
+
+        if triggered == "btn-quick-gse53757":
+            activate_cached_cohort("GSE53757", "Clear Cell Renal Cell Carcinoma (ccRCC)")
+            data = {"accession": "GSE53757", "cancer_type": "Clear Cell Renal Cell Carcinoma (ccRCC)"}
+            sub = "Autonomous Discovery Pipeline • Active Dataset: GSE53757 (Clear Cell Renal Cell Carcinoma)"
+            status = dbc.Alert("✅ Loaded Kidney Cancer Cohort (GSE53757, 144 samples) instantly from validated cache!", color="success", dismissable=True)
+            return data, sub, status, "GSE53757"
 
         if triggered == "btn-quick-gse8671":
             activate_cached_cohort("GSE8671", "Colorectal Adenoma & Carcinoma (CRC)")

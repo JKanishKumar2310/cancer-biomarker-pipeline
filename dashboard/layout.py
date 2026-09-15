@@ -108,6 +108,7 @@ def create_layout():
                                     html.Div("Quick Load Validated Cohorts:", style={"fontSize": "0.85rem", "color": "#a0a0b0", "marginBottom": "6px"}),
                                     dbc.ButtonGroup(
                                         [
+                                            dbc.Button("Kidney (GSE53757)", id="btn-quick-gse53757", size="sm", outline=True, color="info"),
                                             dbc.Button("Colon (GSE8671)", id="btn-quick-gse8671", size="sm", outline=True, color="info"),
                                             dbc.Button("Lung (GSE19804)", id="btn-quick-gse19804", size="sm", outline=True, color="info"),
                                             dbc.Button("Breast (GSE15852)", id="btn-quick-gse15852", size="sm", outline=True, color="info"),

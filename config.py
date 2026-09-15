@@ -46,8 +46,8 @@ if os.path.exists(env_path):
 # ============================================================
 # Dataset
 # ============================================================
-GEO_ACCESSION = "GSE8671"  # 32 colorectal adenoma polyps + 32 paired normal mucosa (GPL570)
-CANCER_TYPE = "Colorectal Adenoma & Carcinoma (CRC)"
+GEO_ACCESSION = "GSE53757"  # 72 clear cell renal cell carcinoma + 72 matched normal kidney (GPL570)
+CANCER_TYPE = "Clear Cell Renal Cell Carcinoma (ccRCC)"
 
 # ============================================================
 # Comparison Design
