@@ -27,7 +27,7 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
 from src.utils import logger
-from src.ai_geo_curator import fetch_geo_metadata, _download_with_timeout
+from src.ai_geo_curator import fetch_geo_metadata, _download_with_timeout, gpl_annotation_url
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +158,14 @@ def match_columns_fuzzy(
     conditions, and patient IDs without any dataset-specific hardcoded strings.
     """
     mappings = {}
-    tumor_tokens = {"tumor", "tumour", "cancer", "ca", "malignant", "carcinoma", "adenoma", "case", "primary", "disease"}
-    normal_tokens = {"normal", "healthy", "cap", "adjacent", "control", "ctrl", "norm", "adj", "mucosa", "non-tumor", "nontumor"}
+    # Tokens are drawn from config so subtype / responder / stage contrasts work.
+    # Broad oncology defaults are merged in to keep classic tumor-vs-normal robust.
+    tumor_tokens = set(getattr(config, "GROUP_A_TOKENS", []) or []) | {
+        "tumor", "tumour", "cancer", "ca", "malignant", "carcinoma", "adenoma", "case", "primary", "disease",
+    }
+    normal_tokens = set(getattr(config, "GROUP_B_TOKENS", []) or []) | {
+        "normal", "healthy", "cap", "adjacent", "control", "ctrl", "norm", "adj", "mucosa", "non-tumor", "nontumor",
+    }
 
     sample_items = list(samples.items())
 
@@ -169,9 +175,10 @@ def match_columns_fuzzy(
         col_lower = col_str.lower()
         col_digits = "".join(c for c in col_str if c.isdigit())
 
-        # Determine condition hint from column name
-        is_normal_col = any(tok in col_lower for tok in normal_tokens)
-        is_tumor_col = any(tok in col_lower for tok in tumor_tokens) and not is_normal_col
+        # Determine condition hint from column name (tokenised to avoid substring collisions)
+        col_name_tokens = set(re.split(r'[\.\-_\s]+', col_lower))
+        is_normal_col = bool(col_name_tokens & normal_tokens)
+        is_tumor_col = bool(col_name_tokens & tumor_tokens) and not is_normal_col
 
         matched_s_id = None
         matched_title = ""
@@ -228,11 +235,16 @@ def match_columns_fuzzy(
                 matched_s_id = best_s_id
 
         if matched_s_id:
-            # Determine condition
+            # Determine condition – column-name hint takes absolute priority.
+            # Only fall back to scanning metadata when the column name is ambiguous.
             meta_str = f"{matched_title} {' '.join(matched_chars)}".lower()
-            if any(w in meta_str for w in normal_tokens) or is_normal_col:
+            if is_normal_col:
                 cond = "Normal"
-            elif any(w in meta_str for w in tumor_tokens) or is_tumor_col:
+            elif is_tumor_col:
+                cond = "Tumor"
+            elif any(re.search(rf'\b{re.escape(w)}\b', meta_str) for w in normal_tokens):
+                cond = "Normal"
+            elif any(re.search(rf'\b{re.escape(w)}\b', meta_str) for w in tumor_tokens):
                 cond = "Tumor"
             else:
                 cond = "Tumor"  # Default assumption for oncology studies
@@ -262,8 +274,122 @@ def match_columns_fuzzy(
 
 
 # ---------------------------------------------------------------------------
+# TidyGEO Phenotype Parser & Dynamic Contrast Engine
+# ---------------------------------------------------------------------------
+
+def extract_tidy_phenodata(samples: dict[str, dict]) -> pd.DataFrame:
+    """
+    Port of BYU's TidyGEO (PMC11294518) key-value phenotype parser:
+    Converts unstructured GEO Sample_characteristics_ch1 lines into a clean,
+    structured clinical DataFrame indexed by GSM accessions.
+    """
+    rows = []
+    for s_id, s_data in samples.items():
+        row = {"sample_id": s_id, "title": s_data.get("title", "")}
+        chars = s_data.get("characteristics", [])
+        for c in chars:
+            m = re.match(r"^([^:]+):\s*(.*)$", str(c).strip())
+            if m:
+                k = re.sub(r"[^a-zA-Z0-9_]+", "_", m.group(1).strip().lower()).strip("_")
+                v = m.group(2).strip()
+                row[k] = v
+            else:
+                row["trait_raw"] = str(c).strip()
+        rows.append(row)
+
+    df_tidy = pd.DataFrame(rows).set_index("sample_id")
+    return df_tidy
+
+
+def detect_dynamic_contrast(tidy_df: pd.DataFrame) -> tuple[dict[str, str], str] | None:
+    """
+    When healthy normal controls are absent (n_normal == 0), identify the primary
+    clinical/biological contrast from tidy phenotype columns.
+    Evaluates:
+    1. Clinical Stage (Late Stage III/IV vs Early Stage I/II)
+    2. Therapy Response (Non-responder/Resistant vs Responder/Sensitive)
+    3. Disease Outcome (Recurrence/Dead vs Disease-Free/Alive)
+    4. Histological Grade (High Grade G3/G4 vs Low Grade G1/G2)
+    """
+    if tidy_df.empty:
+        return None
+
+    # Check Stage
+    stage_cols = [c for c in tidy_df.columns if "stage" in c]
+    for col in stage_cols:
+        vals = tidy_df[col].dropna().astype(str).str.lower()
+        has_late = vals.apply(lambda s: any(x in s for x in ["iii", "iv", "late", "advanced", "metast"])).sum()
+        has_early = vals.apply(lambda s: any(x in s for x in ["stage i", "stage 1", "stage ii", "stage 2", "early", "localized"])).sum()
+        if has_late >= 3 and has_early >= 3:
+            labels = {}
+            for s_id, v in tidy_df[col].items():
+                s = str(v).lower()
+                if any(x in s for x in ["iii", "iv", "late", "advanced", "metast"]):
+                    labels[s_id] = "Tumor"  # Advanced / High-risk case
+                elif any(x in s for x in ["stage i", "stage 1", "stage ii", "stage 2", "early", "localized"]):
+                    labels[s_id] = "Normal"  # Early / Low-risk baseline
+            return labels, f"Clinical Stage ({col}): Late Stage (n={has_late}) vs Early Stage (n={has_early})"
+
+    # Check Response
+    resp_cols = [c for c in tidy_df.columns if any(w in c for w in ["response", "resp", "treatment"])]
+    for col in resp_cols:
+        vals = tidy_df[col].dropna().astype(str).str.lower()
+        has_nr = vals.apply(lambda s: any(x in s for x in ["non", "resist", "refractory", "pd", "progress"])).sum()
+        has_r = vals.apply(lambda s: any(x in s for x in ["respond", "sensit", "cr", "pr", "complete"])).sum()
+        if has_nr >= 3 and has_r >= 3:
+            labels = {}
+            for s_id, v in tidy_df[col].items():
+                s = str(v).lower()
+                if any(x in s for x in ["non", "resist", "refractory", "pd", "progress"]):
+                    labels[s_id] = "Tumor"  # Non-responder / Resistant
+                elif any(x in s for x in ["respond", "sensit", "cr", "pr", "complete"]):
+                    labels[s_id] = "Normal"  # Responder / Sensitive
+            return labels, f"Treatment Response ({col}): Non-Responder (n={has_nr}) vs Responder (n={has_r})"
+
+    # Check Grade
+    grade_cols = [c for c in tidy_df.columns if "grade" in c]
+    for col in grade_cols:
+        vals = tidy_df[col].dropna().astype(str).str.lower()
+        has_high = vals.apply(lambda s: any(x in s for x in ["g3", "g4", "high", "grade 3", "grade 4", "poor"])).sum()
+        has_low = vals.apply(lambda s: any(x in s for x in ["g1", "g2", "low", "grade 1", "grade 2", "well"])).sum()
+        if has_high >= 3 and has_low >= 3:
+            labels = {}
+            for s_id, v in tidy_df[col].items():
+                s = str(v).lower()
+                if any(x in s for x in ["g3", "g4", "high", "grade 3", "grade 4", "poor"]):
+                    labels[s_id] = "Tumor"  # High grade
+                elif any(x in s for x in ["g1", "g2", "low", "grade 1", "grade 2", "well"]):
+                    labels[s_id] = "Normal"  # Low grade
+            return labels, f"Tumor Grade ({col}): High Grade (n={has_high}) vs Low Grade (n={has_low})"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Universal Gene Identifier Translation
 # ---------------------------------------------------------------------------
+
+def _warn_if_unrecognized(df: pd.DataFrame, context: str) -> None:
+    """
+    Emit a loud warning when the matrix index does not look like gene symbols.
+
+    A silent bad identifier map is the most common way a heterogeneous cancer
+    dataset produces garbage results, so we surface it explicitly instead of
+    proceeding quietly.
+    """
+    if len(df) == 0:
+        return
+    sample = [str(x).strip() for x in df.index[:50]]
+    looks_symbolic = sum(
+        1 for x in sample if x and x[0].isalpha() and x.replace("-", "").replace(".", "").isalnum()
+    )
+    frac = looks_symbolic / max(len(sample), 1)
+    if frac < 0.6:
+        logger.warning(
+            f"{context}: only {frac * 100:.0f}% of matrix index entries look like gene symbols "
+            f"(examples: {sample[:5]}). Results may be unreliable - verify the identifier type."
+        )
+
 
 def translate_gene_identifiers(df: pd.DataFrame, platform: str) -> pd.DataFrame:
     """
@@ -271,6 +397,7 @@ def translate_gene_identifiers(df: pd.DataFrame, platform: str) -> pd.DataFrame:
     Handles:
     - Probe IDs (GPL platform annotation)
     - Ensembl Gene IDs (ENSG...)
+    - RefSeq / Entrez Gene IDs (NM_..., numeric)
     - Existing Gene Symbols
     """
     idx_sample = [str(x).strip() for x in df.index[:25]]
@@ -279,7 +406,9 @@ def translate_gene_identifiers(df: pd.DataFrame, platform: str) -> pd.DataFrame:
     if any(x.startswith("ENSG") for x in idx_sample):
         logger.info("Detected Ensembl Gene IDs in expression matrix. Cleaning IDs...")
         df.index = [str(x).split(".")[0].strip() for x in df.index]
-        return df.groupby(df.index).mean()
+        out = df.groupby(df.index).mean()
+        _warn_if_unrecognized(out, "Ensembl mapping")
+        return out
 
     # Case 2: Microarray Probe IDs (e.g. 205239_at, 1007_s_at, ILMN_1725487)
     is_probe = any("_at" in x.lower() or "ilmn" in x.lower() for x in idx_sample) or all(x.isdigit() for x in idx_sample[:10])
@@ -288,8 +417,8 @@ def translate_gene_identifiers(df: pd.DataFrame, platform: str) -> pd.DataFrame:
         try:
             annot_path = os.path.join(config.DATA_DIR, f"{platform}.annot.gz")
             if not os.path.exists(annot_path):
-                annot_url = f"https://ftp.ncbi.nlm.nih.gov/geo/platforms/{platform[:4]}nnn/{platform}/annot/{platform}.annot.gz"
-                logger.info(f"Downloading {platform} platform annotation table...")
+                annot_url = gpl_annotation_url(platform)
+                logger.info(f"Downloading {platform} platform annotation table from {annot_url}...")
                 _download_with_timeout(annot_url, annot_path, timeout=30)
 
             annot_skip = 0
@@ -313,35 +442,71 @@ def translate_gene_identifiers(df: pd.DataFrame, platform: str) -> pd.DataFrame:
 
             probe_to_gene = dict(zip(annot_df["ID"].astype(str), annot_df["Gene symbol"]))
             df["gene"] = df.index.astype(str).map(probe_to_gene)
-            df = df.dropna(subset=["gene"]).set_index("gene")
-            return df.groupby(df.index).mean()
+            mapped = df["gene"].notna().mean()
+            df = df.dropna(subset=["gene"])
+
+            # Max-Variance probe collapse (Bioconductor WGCNA / Jetset / TidyGEO method)
+            sample_cols = [c for c in df.columns if c != "gene"]
+            probe_vars = df[sample_cols].var(axis=1)
+            df["probe_var"] = probe_vars
+            out = df.sort_values(by="probe_var", ascending=False).drop_duplicates(subset=["gene"]).set_index("gene").drop(columns=["probe_var"])
+
+            logger.info(f"Mapped {mapped * 100:.1f}% of probe IDs to {len(out)} unique gene symbols via {platform} (Max-Variance collapse)")
+            if mapped < 0.4:
+                logger.warning(
+                    f"Low probe-mapping rate ({mapped * 100:.1f}%) for {platform}. The platform may be "
+                    f"wrong for this dataset - verify !Series_platform_id in the series matrix."
+                )
+            return out
         except Exception as e:
             logger.warning(f"Probe-to-gene translation failed: {e}. Keeping raw identifiers.")
 
-    # Case 3: Gene Symbols (clean multi-mapping symbols like 'ACTB///ACTG1')
+    # Case 3: RefSeq / Entrez Gene IDs (e.g. NM_001234, NR_..., or bare numeric IDs)
+    is_refseq = any(x.upper().startswith(("NM_", "NR_", "XM_", "XR_")) for x in idx_sample)
+    looks_numeric = all(str(x).strip().isdigit() for x in idx_sample[:10] if str(x).strip())
+    if is_refseq or looks_numeric:
+        logger.warning(
+            "Detected RefSeq/Entrez-style identifiers that cannot be resolved to gene symbols "
+            "offline. Install the 'mygene' package (pip install mygene) or supply a pre-mapped "
+            "matrix for correct results. Proceeding with raw identifiers."
+        )
+
+    # Case 4: Gene Symbols (clean multi-mapping symbols like 'ACTB///ACTG1' and collapse via Max-Variance)
     clean_indices = [str(x).split("///")[0].strip() for x in df.index]
-    df.index = clean_indices
-    df = df[df.index != ""]
-    return df.groupby(df.index).mean()
+    df["gene"] = clean_indices
+    df = df[df["gene"] != ""]
+    sample_cols = [c for c in df.columns if c != "gene"]
+    df["probe_var"] = df[sample_cols].var(axis=1)
+    out = df.sort_values(by="probe_var", ascending=False).drop_duplicates(subset=["gene"]).set_index("gene").drop(columns=["probe_var"])
+    _warn_if_unrecognized(out, "Gene symbol")
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Dynamic Scale & Value Normalization
+# Dynamic Scale & Value Normalization (NCBI GEO2R Quantile Method)
 # ---------------------------------------------------------------------------
 
 def normalize_expression_values(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Inspect expression matrix values and apply appropriate scale transformations:
-    - Raw read counts (integers, max > 500) -> CPM normalization + log2(CPM + 1)
-    - Continuous FPKM / TPM (floats, max > 50) -> log2(x + 1)
-    - Existing log2 intensities (max <= 50) -> preserve without modification
+    Inspect expression matrix values and apply appropriate scale transformations,
+    porting the exact NCBI GEO2R quantile-based log2 scale detection heuristic:
+    - Checks for raw sequencing integer counts -> library-size CPM + log2(CPM + 1)
+    - Checks GEO2R quantiles:
+        q = np.percentile(vals, [0, 25, 50, 75, 99, 100])
+        needs_log2 = (q[4] > 100) or ((q[5] - q[0] > 50) and (q[1] > 0)) or (0 < q[1] < 1 and 1 < q[3] < 2)
+    - If needs_log2, clamps non-positive values to 1.0 and applies log2(x).
+    - Otherwise, preserves existing log2-scale intensities.
     """
     if df.empty:
         return df
 
-    max_val = df.values.max()
+    vals = df.values[np.isfinite(df.values)]
+    if len(vals) == 0:
+        return df
 
-    # Check for raw integer counts
+    max_val = float(vals.max())
+
+    # Check for raw integer read counts
     sample_vals = df.iloc[:10, :min(5, df.shape[1])].values.flatten()
     is_mostly_integer = np.all(np.isclose(sample_vals, np.round(sample_vals))) and max_val > 500
 
@@ -352,11 +517,23 @@ def normalize_expression_values(df: pd.DataFrame) -> pd.DataFrame:
         cpm = (df / lib_sizes) * 1e6
         return np.log2(cpm + 1)
 
-    if max_val > 50:
-        logger.info(f"Detected unlogged continuous expression values (max={max_val:.2f}). Applying log2(x + 1)...")
-        return np.log2(df + 1)
+    # NCBI GEO2R Quantile Heuristic
+    # quantiles: [0: min, 1: 25th, 2: 50th, 3: 75th, 4: 99th, 5: max]
+    q = np.percentile(vals, [0, 25, 50, 75, 99, 100])
+    needs_log2 = bool(
+        (q[4] > 100) or
+        ((q[5] - q[0] > 50) and (q[1] > 0)) or
+        (0 < q[1] < 1 and 1 < q[3] < 2)
+    )
 
-    logger.info(f"Expression values are within standard log2 scale (max={max_val:.2f}). Skipping log2.")
+    if needs_log2:
+        logger.info(
+            f"GEO2R Quantile test detected unlogged intensities (q99={q[4]:.1f}, range={q[5]-q[0]:.1f}). "
+            f"Applying log2(max(x, 1))..."
+        )
+        return np.log2(np.maximum(df, 1.0))
+
+    logger.info(f"GEO2R Quantile test confirmed matrix is within standard log2 scale (q99={q[4]:.2f}, max={max_val:.2f}). Skipping log2.")
     return df
 
 
@@ -484,6 +661,28 @@ def ingest_dataset(accession: str) -> tuple[pd.DataFrame, pd.Series]:
     label_series = pd.Series({s: labels_dict[s] for s in valid_samples}, name="condition")
     patient_series = pd.Series({s: patient_dict.get(s, s) for s in valid_samples}, name="patient_id")
     label_series.attrs["patient_id"] = patient_series
+
+    # Step 4b: TidyGEO PhenoData Extraction & Dynamic Contrast Fallback
+    tidy_df = extract_tidy_phenodata(samples)
+    logger.info(f"TidyGEO PhenoData extracted {tidy_df.shape[1]} clinical variables across {len(tidy_df)} samples")
+
+    n_tumors = (label_series == "Tumor").sum()
+    n_normals = (label_series == "Normal").sum()
+
+    if n_normals == 0 or n_tumors == 0:
+        logger.warning(f"Cohort lacks standard healthy normal controls (found: Tumor={n_tumors}, Normal={n_normals}). Searching for clinical subgroup contrasts...")
+        contrast_res = detect_dynamic_contrast(tidy_df)
+        if contrast_res:
+            dyn_labels, contrast_name = contrast_res
+            logger.info(f"🎯 Autonomous Dynamic Contrast Activated: {contrast_name}")
+            valid_dyn = [s for s, cond in dyn_labels.items() if cond in ("Tumor", "Normal") and s in df_genes.columns]
+            if len(valid_dyn) >= 6:
+                valid_samples = valid_dyn
+                df_genes = df_genes[valid_samples]
+                label_series = pd.Series({s: dyn_labels[s] for s in valid_samples}, name="condition")
+                patient_series = pd.Series({s: patient_dict.get(s, s) for s in valid_samples}, name="patient_id")
+                label_series.attrs["patient_id"] = patient_series
+                label_series.attrs["contrast_name"] = contrast_name
 
     # Step 5: Translate Gene Identifiers to official Gene Symbols
     df_genes = translate_gene_identifiers(df_genes, platform)

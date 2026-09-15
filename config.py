@@ -35,6 +35,35 @@ GEO_ACCESSION = "GSE8671"  # 32 colorectal adenoma polyps + 32 paired normal muc
 CANCER_TYPE = "Colorectal Adenoma & Carcinoma (CRC)"
 
 # ============================================================
+# Comparison Design
+# ============================================================
+# The pipeline contrasts two sample groups. The default is the classic
+# tumor-vs-normal oncology comparison, but many modern cancer datasets only
+# provide a subtype / treatment-response / stage contrast. Set COMPARISON_MODE
+# and adjust the two group labels + keyword tokens to handle those cohorts.
+#
+#   COMPARISON_MODE = "tumor_vs_normal"        # classic case vs healthy/adjacent
+#   COMPARISON_MODE = "subtype_vs_subtype"     # e.g. ER+ vs ER-, stage I vs IV
+#   COMPARISON_MODE = "responder_vs_non_responder"  # treatment response
+#
+# GROUP_A is the "case/positive" group (equivalent to Tumor in the DE code),
+# GROUP_B is the "control/negative" group (equivalent to Normal).
+COMPARISON_MODE = "tumor_vs_normal"
+GROUP_A_LABEL = "Tumor"
+GROUP_B_LABEL = "Normal"
+
+# Keyword tokens used by the ontology matcher to assign samples to GROUP_A / GROUP_B.
+# Matching is case-insensitive and substring-based against sample title + characteristics.
+GROUP_A_TOKENS = [
+    "tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm",
+    "case", "primary", "disease",
+]
+GROUP_B_TOKENS = [
+    "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "mucosa",
+    "paired normal",
+]
+
+# ============================================================
 # Reproducibility
 # ============================================================
 RANDOM_SEED = 42
