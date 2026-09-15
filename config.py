@@ -104,14 +104,16 @@ TOP_ML_GENES = 50         # Number of top ML-ranked genes
 
 ML_MODELS = {
     "RandomForest": {
-        "n_estimators": 200,
+        "n_estimators": 100,
         "max_depth": None,
+        "max_features": "sqrt",
         "class_weight": "balanced",
     },
     "GradientBoosting": {
-        "n_estimators": 100,
+        "n_estimators": 50,
         "learning_rate": 0.1,
         "max_depth": 3,
+        "max_features": "sqrt",
     },
     "L1_LogisticRegression": {
         "C": 0.1,

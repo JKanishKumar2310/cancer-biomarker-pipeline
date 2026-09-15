@@ -160,10 +160,11 @@ def register_callbacks(app):
     # ── PCA Plot ─────────────────────────────────────────────
     @app.callback(
         Output("pca-plot", "figure"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_pca(tab):
-        if tab != "tab-overview":
+    def update_pca(tab, active_cohort):
+        if tab != "tab-overview" and tab is not None:
             return no_update
 
         expr = RESULTS.get("expression", pd.DataFrame())
@@ -222,10 +223,11 @@ def register_callbacks(app):
     # ── Distribution Plot ────────────────────────────────────
     @app.callback(
         Output("distribution-plot", "figure"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_distribution(tab):
-        if tab != "tab-overview":
+    def update_distribution(tab, active_cohort):
+        if tab != "tab-overview" and tab is not None:
             return no_update
 
         expr = RESULTS.get("expression", pd.DataFrame())
@@ -275,9 +277,15 @@ def register_callbacks(app):
     # ── Volcano Plot ─────────────────────────────────────────
     @app.callback(
         Output("volcano-plot", "figure"),
-        [Input("fc-slider", "value"), Input("pval-slider", "value")],
+        [Input("fc-slider", "value"),
+         Input("pval-slider", "value"),
+         Input("active-cohort-store", "data"),
+         Input("main-tabs", "active_tab")],
     )
-    def update_volcano(fc_thresh, pval_thresh):
+    def update_volcano(fc_thresh, pval_thresh, active_cohort, tab):
+        if tab != "tab-volcano" and tab is not None:
+            return no_update
+
         de = RESULTS.get("de_results", pd.DataFrame())
 
         if len(de) == 0:
@@ -374,10 +382,11 @@ def register_callbacks(app):
     # ── Heatmap ──────────────────────────────────────────────
     @app.callback(
         Output("heatmap-plot", "figure"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_heatmap(tab):
-        if tab != "tab-heatmap":
+    def update_heatmap(tab, active_cohort):
+        if tab != "tab-heatmap" and tab is not None:
             return no_update
 
         de = RESULTS.get("de_results", pd.DataFrame())
@@ -459,10 +468,11 @@ def register_callbacks(app):
     # ── Biomarker Bar Chart ──────────────────────────────────
     @app.callback(
         Output("biomarker-bar-chart", "figure"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_biomarker_chart(tab):
-        if tab != "tab-biomarkers":
+    def update_biomarker_chart(tab, active_cohort):
+        if tab != "tab-biomarkers" and tab is not None:
             return no_update
 
         consensus = RESULTS.get("consensus", pd.DataFrame())
@@ -496,10 +506,11 @@ def register_callbacks(app):
     # ── Model Comparison ─────────────────────────────────────
     @app.callback(
         Output("model-comparison-plot", "figure"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_model_comparison(tab):
-        if tab != "tab-biomarkers":
+    def update_model_comparison(tab, active_cohort):
+        if tab != "tab-biomarkers" and tab is not None:
             return no_update
 
         ml = RESULTS.get("ml_ranking", pd.DataFrame())
@@ -527,10 +538,11 @@ def register_callbacks(app):
     # ── DE vs ML Scatter ─────────────────────────────────────
     @app.callback(
         Output("de-vs-ml-scatter", "figure"),
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_de_ml_scatter(tab):
-        if tab != "tab-biomarkers":
+    def update_de_ml_scatter(tab, active_cohort):
+        if tab != "tab-biomarkers" and tab is not None:
             return no_update
 
         de = RESULTS.get("de_results", pd.DataFrame())
@@ -571,10 +583,11 @@ def register_callbacks(app):
     @app.callback(
         [Output("go-enrichment-plot", "figure"),
          Output("kegg-enrichment-plot", "figure")],
-        Input("main-tabs", "active_tab"),
+        [Input("main-tabs", "active_tab"),
+         Input("active-cohort-store", "data")],
     )
-    def update_pathway_plots(tab):
-        if tab != "tab-pathways":
+    def update_pathway_plots(tab, active_cohort):
+        if tab != "tab-pathways" and tab is not None:
             return no_update, no_update
 
         enr = RESULTS.get("enrichment", pd.DataFrame())
@@ -632,9 +645,10 @@ def register_callbacks(app):
         [
             Input("survival-gene-dropdown", "value"),
             Input("survival-endpoint-radio", "value"),
+            Input("active-cohort-store", "data"),
         ],
     )
-    def update_survival_and_drugs(gene, endpoint):
+    def update_survival_and_drugs(gene, endpoint, active_cohort):
         from src.survival_analysis import evaluate_biomarker_survival
         from src.drug_mapping import get_drug_details_for_gene
 
@@ -721,9 +735,14 @@ def register_callbacks(app):
             Output("external-roc-plot", "figure"),
             Output("external-metrics-content", "children"),
         ],
-        [Input("main-tabs", "active_tab")],
+        [
+            Input("main-tabs", "active_tab"),
+            Input("active-cohort-store", "data"),
+        ],
     )
-    def update_external_validation(active_tab):
+    def update_external_validation(active_tab, active_cohort):
+        if active_tab != "tab-validation" and active_tab is not None:
+            return no_update, no_update
         ext_m = RESULTS.get("ext_metrics", pd.DataFrame())
         ext_r = RESULTS.get("ext_roc", pd.DataFrame())
 
@@ -891,10 +910,10 @@ def register_callbacks(app):
         ],
         [
             Input("main-tabs", "active_tab"),
-            Input("geo-status-output", "children"),
+            Input("active-cohort-store", "data"),
         ],
     )
-    def update_dynamic_controls_and_titles(_tab, _status):
+    def update_dynamic_controls_and_titles(_tab, _active_cohort):
         consensus = RESULTS.get("consensus", pd.DataFrame())
         survival = RESULTS.get("survival", pd.DataFrame())
 
@@ -1059,10 +1078,13 @@ def register_callbacks(app):
     # ── Multi-Omics Callbacks ──────────────────────────────
     @app.callback(
         Output("multiomics-scatter-plot", "figure"),
-        Input("main-tabs", "active_tab"),
+        [
+            Input("main-tabs", "active_tab"),
+            Input("active-cohort-store", "data"),
+        ],
     )
-    def update_multiomics_scatter(tab):
-        if tab != "tab-multiomics":
+    def update_multiomics_scatter(tab, active_cohort):
+        if tab != "tab-multiomics" and tab is not None:
             return no_update
         mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
         if not os.path.exists(mo_path):
@@ -1148,10 +1170,13 @@ def register_callbacks(app):
 
     @app.callback(
         Output("multiomics-table-content", "children"),
-        Input("main-tabs", "active_tab"),
+        [
+            Input("main-tabs", "active_tab"),
+            Input("active-cohort-store", "data"),
+        ],
     )
-    def update_multiomics_table(tab):
-        if tab != "tab-multiomics":
+    def update_multiomics_table(tab, active_cohort):
+        if tab != "tab-multiomics" and tab is not None:
             return no_update
         mo_path = os.path.join(config.RESULTS_DIR, "multi_omics_integration.csv")
         if not os.path.exists(mo_path):
