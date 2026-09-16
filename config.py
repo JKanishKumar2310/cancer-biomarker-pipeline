@@ -71,11 +71,12 @@ GROUP_B_LABEL = "Normal"
 # Matching is case-insensitive and substring-based against sample title + characteristics.
 GROUP_A_TOKENS = [
     "tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm",
-    "case", "primary", "disease",
+    "case", "primary", "disease", "glioma", "melanoma", "sarcoma", "astrocytoma",
+    "glioblastoma", "oligodendroglioma", "ptc", "atc", "leukemia", "lymphoma", "myeloma",
 ]
 GROUP_B_TOKENS = [
-    "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "mucosa",
-    "paired normal",
+    "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "non-tumour", "nontumour", "mucosa",
+    "paired normal", "benign", "donor", "non-malignant", "nonmalignant", "epilepsy", "non-cancerous", "noncancerous",
 ]
 
 # ============================================================

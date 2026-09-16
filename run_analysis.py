@@ -27,7 +27,10 @@ from src.data_loader import load_data
 from src.preprocessing import preprocess
 from src.differential_expression import run_differential_expression, get_top_degs
 from src.ml_biomarkers import run_ml_biomarker_ranking
-from src.pathway_analysis import run_enrichment
+from src.pathway_enrichment import analyze_and_export_pathways
+from src.qc_diagnostics import compute_qc_diagnostics
+from src.signature_scorer import calculate_composite_risk_score
+from src.report_generator import generate_html_report
 from src.ai_annotator import annotate_biomarkers, generate_summary_report, fetch_cohorts_for_cancer
 from src.survival_analysis import run_survival_pipeline
 from src.external_validation import run_external_validation
@@ -60,9 +63,13 @@ def main(force_synthetic: bool = False):
     expr_df, labels = load_data(force_synthetic=force_synthetic)
     logger.info("")
 
-    # ── Step 2: Preprocess ───────────────────────────────────
-    logger.info("STEP 2/8: Preprocessing & quality filtering...")
+    # ── Step 2: Preprocess & Sample Quality Control ──────────
+    logger.info("STEP 2/8: Preprocessing & sample quality diagnostics...")
     expr_clean, labels_clean = preprocess(expr_df, labels)
+    try:
+        compute_qc_diagnostics(expr_clean, labels_clean)
+    except Exception as e:
+        logger.warning(f"Sample QC diagnostics skipped: {e}")
     logger.info("")
 
     # ── Step 3: Differential Expression ──────────────────────
@@ -72,20 +79,23 @@ def main(force_synthetic: bool = False):
     logger.info("")
 
     # ── Step 4: ML Biomarker Ranking ─────────────────────────
-    logger.info("STEP 4/8: ML-based biomarker ranking (Random Forest)...")
+    logger.info("STEP 4/8: ML-based biomarker ranking (Random Forest + Gradient Boosting + L1)...")
     ml_ranking, consensus = run_ml_biomarker_ranking(
         expr_clean, labels_clean, de_results
     )
+    try:
+        calculate_composite_risk_score(expr_clean, labels_clean, consensus)
+    except Exception as e:
+        logger.warning(f"Composite signature risk scoring skipped: {e}")
     logger.info("")
 
-    # ── Step 5: Pathway Enrichment ───────────────────────────
-    logger.info("STEP 5/8: Pathway enrichment analysis (GO + KEGG)...")
-    if len(consensus) > 0:
-        enrichment_genes = consensus["gene"].tolist()
-    else:
-        enrichment_genes = top_degs["gene"].tolist()[:30]
-
-    enrichment = run_enrichment(enrichment_genes)
+    # ── Step 5: Pathway Enrichment (GO & KEGG ORA) ───────────
+    logger.info("STEP 5/8: Pathway enrichment analysis (GO + KEGG ORA)...")
+    try:
+        enrichment = analyze_and_export_pathways(de_results, consensus)
+    except Exception as e:
+        logger.warning(f"Advanced pathway enrichment skipped: {e}")
+        enrichment = []
     logger.info("")
 
     # ── Step 6 & 7: AI selects survival + validation cohorts ────────────────
@@ -107,8 +117,8 @@ def main(force_synthetic: bool = False):
     ext_val = run_external_validation(force_synthetic=force_synthetic)
     logger.info("")
 
-    # ── Step 8: Drug Mapping, Multi-Omics & AI Annotation ─────
-    logger.info("STEP 8/8: Targeted drug mapping, multi-omics & biological summary...")
+    # ── Step 8: Drug Mapping, Multi-Omics, AI Annotation & Report Exporter ─────
+    logger.info("STEP 8/8: Targeted drug mapping, multi-omics, AI annotation & report generation...")
     drugs_df = map_biomarkers_to_drugs(consensus)
     try:
         integrate_multi_omics(
@@ -120,6 +130,10 @@ def main(force_synthetic: bool = False):
         logger.warning(f"Multi-omics integration skipped: {e}")
     annotated = annotate_biomarkers(consensus)
     summary = generate_summary_report(de_results, consensus, annotated)
+    try:
+        generate_html_report()
+    except Exception as e:
+        logger.warning(f"HTML report generation skipped: {e}")
     logger.info("")
 
     # ── Summary ──────────────────────────────────────────────

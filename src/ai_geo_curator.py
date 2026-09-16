@@ -401,24 +401,29 @@ def curate_with_llm(accession: str, series_title: str, samples: dict, api_key: s
         return None
 
 
-def _matches_term(term: str, text: str) -> bool:
-    """Safely match a keyword or phrase against text, avoiding substring false positives."""
+def _matches_term(term: str, text: str, is_tumor_term: bool = False) -> bool:
+    """Safely match a keyword or phrase against text, avoiding substring false positives and non-tumor negatives."""
     term = term.strip().lower()
     text = text.lower()
     if not term or not text:
         return False
+
+    # Prevent 'tumor' or 'malignant' matching 'non-tumor' or 'non-malignant'
+    if is_tumor_term:
+        text = re.sub(r'\b(?:non|not|anti)[ -]?(?:tumor|tumour|malignant|cancerous|carcinoma)\b', ' ', text)
+
     # If term is 1-2 characters (e.g. 't', 'n', 'hc'), require boundary or numeric prefix (e.g., '2t', '165n')
     if len(term) <= 2:
         return bool(re.search(r'(?:\b|\d)' + re.escape(term) + r'\b', text))
     # If it's a multi-word phrase, check substring in text
-    if " " in term:
+    if " " in term or "-" in term:
         return term in text
     # Standard word boundary for single words >= 3 chars
     return bool(re.search(r'\b' + re.escape(term) + r'\b', text))
 
 
-def _matches_any_term(terms: list, text: str) -> bool:
-    return any(_matches_term(t, text) for t in terms if t)
+def _matches_any_term(terms: list, text: str, is_tumor_term: bool = False) -> bool:
+    return any(_matches_term(t, text, is_tumor_term=is_tumor_term) for t in terms if t)
 
 
 def curate_dataset(accession: str) -> dict:
@@ -475,11 +480,14 @@ def curate_dataset(accession: str) -> dict:
             tumor_words = tumor_words or [
                 "tumor", "tumour", "cancer", "malignant", "carcinoma", "adenoma", "polyp", "neoplasm",
                 "crc", "gbm", "nsclc", "sclc", "luad", "lusc", "brca", "panc", "chol", "prad", "kirc",
-                "glioma", "melanoma", "sarcoma",
+                "glioma", "melanoma", "sarcoma", "astrocytoma", "glioblastoma", "oligodendroglioma",
+                "atc", "ptc", "carcinomas", "tumors", "tumours", "cancers",
             ]
             normal_words = normal_words or [
-                "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "mucosa",
-                "donor", "healthy control", "normal mucosa", "paired normal",
+                "normal", "healthy", "adjacent", "control", "ctrl", "non-tumor", "nontumor", "non-tumour",
+                "nontumour", "mucosa", "donor", "healthy control", "normal mucosa", "paired normal",
+                "benign", "epilepsy", "non-malignant", "nonmalignant", "normal thyroid", "surrounding normal",
+                "non-cancerous", "noncancerous", "patient-matched non-tumor",
             ]
         for s_id in unassigned:
             data = samples[s_id]
@@ -487,22 +495,26 @@ def curate_dataset(accession: str) -> dict:
             chars = " ".join(data["characteristics"])
             full_text = f"{title} {chars}"
 
-            is_normal = _matches_any_term(normal_words, full_text)
-            is_tumor = _matches_any_term(tumor_words, full_text)
+            is_normal = _matches_any_term(normal_words, full_text, is_tumor_term=False)
+            is_tumor = _matches_any_term(tumor_words, full_text, is_tumor_term=True)
 
             if is_tumor and not is_normal:
                 labels[s_id] = "Tumor"
             elif is_normal and not is_tumor:
                 labels[s_id] = "Normal"
             elif is_tumor and is_normal:
-                title_tumor = _matches_any_term(tumor_words, title)
-                title_normal = _matches_any_term(normal_words, title)
+                title_tumor = _matches_any_term(tumor_words, title, is_tumor_term=True)
+                title_normal = _matches_any_term(normal_words, title, is_tumor_term=False)
                 if title_tumor and not title_normal:
                     labels[s_id] = "Tumor"
                 elif title_normal and not title_tumor:
                     labels[s_id] = "Normal"
                 else:
-                    labels[s_id] = "Normal" if "normal" in full_text.lower() else "Tumor"
+                    # If normal terms like control / non-tumor / benign / normal appear, favor Normal
+                    if any(w in full_text.lower() for w in ["non-tumor", "nontumor", "control", "ctrl", "benign", "normal", "healthy", "non-malignant"]):
+                        labels[s_id] = "Normal"
+                    else:
+                        labels[s_id] = "Tumor"
             else:
                 labels[s_id] = "Unknown"
 
