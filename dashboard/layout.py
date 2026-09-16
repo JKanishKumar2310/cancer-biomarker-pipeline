@@ -109,6 +109,7 @@ def create_layout():
                                     dbc.ButtonGroup(
                                         [
                                             dbc.Button("Kidney (GSE53757)", id="btn-quick-gse53757", size="sm", outline=True, color="info"),
+                                            dbc.Button("Oral (GSE30784)", id="btn-quick-gse30784", size="sm", outline=True, color="info"),
                                             dbc.Button("Colon (GSE8671)", id="btn-quick-gse8671", size="sm", outline=True, color="info"),
                                             dbc.Button("Lung (GSE19804)", id="btn-quick-gse19804", size="sm", outline=True, color="info"),
                                             dbc.Button("Breast (GSE15852)", id="btn-quick-gse15852", size="sm", outline=True, color="info"),

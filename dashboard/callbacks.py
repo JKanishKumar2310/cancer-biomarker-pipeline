@@ -853,6 +853,7 @@ def register_callbacks(app):
         ],
         [
             Input("btn-quick-gse53757", "n_clicks"),
+            Input("btn-quick-gse30784", "n_clicks"),
             Input("btn-quick-gse8671", "n_clicks"),
             Input("btn-quick-gse19804", "n_clicks"),
             Input("btn-quick-gse15852", "n_clicks"),
@@ -862,7 +863,7 @@ def register_callbacks(app):
         State("geo-accession-input", "value"),
         prevent_initial_call=True,
     )
-    def handle_cohort_actions(c_kidney, c_colon, c_lung, c_breast, c_reset, c_run, accession_input):
+    def handle_cohort_actions(c_kidney, c_oral, c_colon, c_lung, c_breast, c_reset, c_run, accession_input):
         triggered = ctx.triggered_id
         if not triggered:
             return no_update, no_update, no_update, no_update
@@ -877,6 +878,13 @@ def register_callbacks(app):
             sub = "Autonomous Discovery Pipeline • Active Dataset: GSE53757 (Clear Cell Renal Cell Carcinoma)"
             status = dbc.Alert("✅ Loaded Kidney Cancer Cohort (GSE53757, 144 samples) instantly from validated cache!", color="success", dismissable=True)
             return data, sub, status, "GSE53757"
+
+        if triggered == "btn-quick-gse30784":
+            activate_cached_cohort("GSE30784", "Oral Squamous Cell Carcinoma (OSCC)")
+            data = {"accession": "GSE30784", "cancer_type": "Oral Squamous Cell Carcinoma (OSCC)"}
+            sub = "Autonomous Discovery Pipeline • Active Dataset: GSE30784 (Oral Squamous Cell Carcinoma)"
+            status = dbc.Alert("✅ Loaded Oral Cancer Cohort (GSE30784, 212 samples) instantly from validated cache!", color="success", dismissable=True)
+            return data, sub, status, "GSE30784"
 
         if triggered == "btn-quick-gse8671":
             activate_cached_cohort("GSE8671", "Colorectal Adenoma & Carcinoma (CRC)")
