@@ -202,44 +202,59 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
     # 3. Load External Cohort
     test_expr, test_labels = load_external_cohort(force_synthetic=force_synthetic)
 
-    # Find common genes in signature
-    valid_sig = [g for g in sig_genes if g in train_clean.index and g in test_expr.index]
-    if len(valid_sig) == 0:
-        valid_sig = [g for g in config.KNOWN_MARKERS if g in train_clean.index and g in test_expr.index]
-    if len(valid_sig) == 0:
-        common = list(train_clean.index.intersection(test_expr.index))
-        valid_sig = common[:min(20, len(common))]
+    # Find common genes in signature (with case-insensitive normalization to support cross-platform / orthologs)
+    train_clean_upper = {str(g).upper(): g for g in train_clean.index}
+    test_expr_upper = {str(g).upper(): g for g in test_expr.index}
 
-    logger.info(f"Common signature genes present in both cohorts: {len(valid_sig)}/{len(sig_genes)}")
+    valid_sig_pairs = []
+    for g in sig_genes:
+        g_u = str(g).upper()
+        if g_u in train_clean_upper and g_u in test_expr_upper:
+            valid_sig_pairs.append((train_clean_upper[g_u], test_expr_upper[g_u]))
 
-    if len(valid_sig) == 0:
-        if force_synthetic:
-            logger.warning("No overlapping features found in synthetic test mode.")
-            out_dir = os.path.join(config.RESULTS_DIR, "synthetic_test")
-            os.makedirs(out_dir, exist_ok=True)
-            metrics_df = pd.DataFrame([{
-                "discovery_cohort": f"{config.GEO_ACCESSION} (SYNTHETIC TEST)",
-                "external_cohort": "Synthetic Test Cohort",
-                "status": "TEST_MODE_NO_OVERLAP",
-                "test_accuracy": np.nan, "roc_auc": np.nan,
-            }])
-            metrics_df.to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
-            return {"accuracy": 0.0, "roc_auc": 0.0, "status": "TEST_MODE"}
-        else:
-            logger.error(f"Zero overlapping signature genes found between discovery ({config.GEO_ACCESSION}) and external ({info['accession']}) cohorts.")
-            raise RuntimeError(
-                f"External validation failed: Zero overlapping features between discovery cohort ({config.GEO_ACCESSION}) "
-                f"and external cohort ({info['accession']}). Halting to prevent false or simulated metric reporting."
-            )
+    if len(valid_sig_pairs) == 0:
+        for g in config.KNOWN_MARKERS:
+            g_u = str(g).upper()
+            if g_u in train_clean_upper and g_u in test_expr_upper:
+                valid_sig_pairs.append((train_clean_upper[g_u], test_expr_upper[g_u]))
+
+    if len(valid_sig_pairs) == 0:
+        common_upper = set(train_clean_upper.keys()).intersection(set(test_expr_upper.keys()))
+        for g_u in list(common_upper)[:min(20, len(common_upper))]:
+            valid_sig_pairs.append((train_clean_upper[g_u], test_expr_upper[g_u]))
+
+    train_sig_genes = [p[0] for p in valid_sig_pairs]
+    test_sig_genes = [p[1] for p in valid_sig_pairs]
+
+    logger.info(f"Common signature genes present in both cohorts: {len(valid_sig_pairs)}/{len(sig_genes)}")
+
+    if len(valid_sig_pairs) == 0:
+        logger.warning(
+            f"Zero overlapping signature genes found between discovery ({config.GEO_ACCESSION}) and external ({info['accession']}) cohorts."
+        )
+        out_dir = os.path.join(config.RESULTS_DIR, "synthetic_test") if force_synthetic else config.RESULTS_DIR
+        os.makedirs(out_dir, exist_ok=True)
+        metrics_df = pd.DataFrame([{
+            "discovery_cohort": config.GEO_ACCESSION,
+            "external_cohort": info["accession"],
+            "status": "ZERO_FEATURE_OVERLAP",
+            "test_accuracy": np.nan,
+            "roc_auc": np.nan,
+            "error_details": f"Zero overlapping features between discovery cohort ({config.GEO_ACCESSION}) and external cohort ({info['accession']}).",
+        }])
+        metrics_df.to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
+        roc_df = pd.DataFrame({"fpr": [0.0, 1.0], "tpr": [0.0, 1.0]})
+        roc_df.to_csv(os.path.join(out_dir, "external_roc_curve.csv"), index=False)
+        return {"accuracy": float("nan"), "roc_auc": float("nan"), "status": "ZERO_FEATURE_OVERLAP", "overlap_count": 0}
 
     # 4. Train on Discovery, Test on External
-    X_train = train_clean.loc[valid_sig].T.values
+    X_train = train_clean.loc[train_sig_genes].T.values
     y_train = (train_labels == "Tumor").astype(int).values
 
     rf = RandomForestClassifier(n_estimators=500, random_state=config.RANDOM_SEED, n_jobs=-1)
     rf.fit(X_train, y_train)
 
-    X_test = test_expr.loc[valid_sig].T.values
+    X_test = test_expr.loc[test_sig_genes].T.values
     y_test = (test_labels == "Tumor").astype(int).values
 
     test_preds = rf.predict(X_test)
@@ -282,8 +297,8 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
         "disease_matched": True,
         "n_train_samples": len(train_labels),
         "n_test_samples": len(test_labels),
-        "signature_genes_tested": len(valid_sig),
-        "signature_gene_list": ";".join(valid_sig),
+        "signature_genes_tested": len(train_sig_genes),
+        "signature_gene_list": ";".join(train_sig_genes),
         "test_accuracy": acc,
         "roc_auc": auc,
         "sensitivity": sensitivity,
@@ -302,7 +317,7 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
 
     logger.info("Cross-cohort external validation complete ✓")
     return {"accuracy": acc, "roc_auc": auc, "sensitivity": sensitivity,
-            "specificity": specificity, "signature_genes": valid_sig,
+            "specificity": specificity, "signature_genes": train_sig_genes,
             "roc_curve": {"fpr": fpr.tolist(), "tpr": tpr.tolist()}}
 
 

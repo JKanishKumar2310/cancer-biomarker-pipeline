@@ -15,6 +15,8 @@ Usage:
 import os
 import sys
 import time
+import math
+import numpy as np
 
 # Ensure project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -132,9 +134,10 @@ def main(force_synthetic: bool = False):
     logger.info(f"  ⬇️  Downregulated DEGs: {len(de_results[de_results['regulation'] == 'Downregulated'])}")
     logger.info(f"  🎯 Consensus biomarkers: {len(consensus)}")
     logger.info(f"  🧬 Enriched pathways: {len(enrichment)}")
-    logger.info(f"  ⏳ Survival-validated genes: {len(survival_df)}")
-    logger.info(f"  🌐 External Cohort Test Accuracy: {ext_val['accuracy']*100:.1f}% (ROC-AUC: {ext_val['roc_auc']:.4f})")
-    logger.info(f"  💊 Targeted drug matches: {len(drugs_df)}")
+    if np.isnan(ext_val.get("accuracy", np.nan)):
+        logger.info(f"  🌐 External Cohort Validation: N/A ({ext_val.get('status', 'Zero Overlap')})")
+    else:
+        logger.info(f"  🌐 External Cohort Test Accuracy: {ext_val['accuracy']*100:.1f}% (ROC-AUC: {ext_val['roc_auc']:.4f})")
     logger.info(f"")
     logger.info(f"  Results saved to: {config.RESULTS_DIR}")
     logger.info(f"")

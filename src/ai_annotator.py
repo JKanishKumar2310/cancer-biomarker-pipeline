@@ -157,6 +157,8 @@ _SURVIVAL_FALLBACKS = {
     "breast":  {"accession": "GSE1456",  "n": 159, "endpoint": "Relapse-Free Survival","label": "GSE1456, n=159 (Breast, Sweden)"},
     "colon":   {"accession": "GSE39582", "n": 566, "endpoint": "Overall & Relapse-Free Survival", "label": "GSE39582, n=566 (CIT Colorectal Cohort)"},
     "crc":     {"accession": "GSE39582", "n": 566, "endpoint": "Overall & Relapse-Free Survival", "label": "GSE39582, n=566 (CIT Colorectal Cohort)"},
+    "kidney":  {"accession": "GSE22541", "n": 64,  "endpoint": "Overall Survival",     "label": "GSE22541, n=64 (ccRCC Survival, Europe)"},
+    "renal":   {"accession": "GSE22541", "n": 64,  "endpoint": "Overall Survival",     "label": "GSE22541, n=64 (ccRCC Survival, Europe)"},
     "default": {"accession": "GSE31210", "n": 226, "endpoint": "Overall Survival",     "label": "GSE31210, n=226 (NSCLC, Japan)"},
 }
 
@@ -165,6 +167,8 @@ _VALIDATION_FALLBACKS = {
     "breast":  {"accession": "GSE42568", "n": 121, "label": "GSE42568 (Breast, n=121, Europe)"},
     "colon":   {"accession": "GSE20916", "n": 145, "label": "GSE20916 (Colorectal, n=145)"},
     "crc":     {"accession": "GSE20916", "n": 145, "label": "GSE20916 (Colorectal, n=145)"},
+    "kidney":  {"accession": "GSE40435", "n": 202, "label": "GSE40435 (ccRCC, n=202: 101 tumor + 101 normal)"},
+    "renal":   {"accession": "GSE40435", "n": 202, "label": "GSE40435 (ccRCC, n=202: 101 tumor + 101 normal)"},
     "default": {"accession": "GSE18842", "n": 91,  "label": "GSE18842 (NSCLC, n=91)"},
 }
 
