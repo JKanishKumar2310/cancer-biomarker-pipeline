@@ -1,0 +1,63 @@
+{
+  "n_samples": 196,
+  "n_genes": 19698,
+  "n_outliers": 1,
+  "outlier_samples": [
+    "GSM1662569"
+  ],
+  "pc1_variance": 13.16,
+  "pc2_variance": 6.94,
+  "scree_data": [
+    {
+      "component": "PC1",
+      "variance_explained": 13.16,
+      "cumulative_variance": 13.16
+    },
+    {
+      "component": "PC2",
+      "variance_explained": 6.94,
+      "cumulative_variance": 20.1
+    },
+    {
+      "component": "PC3",
+      "variance_explained": 5.91,
+      "cumulative_variance": 26.01
+    },
+    {
+      "component": "PC4",
+      "variance_explained": 2.35,
+      "cumulative_variance": 28.36
+    },
+    {
+      "component": "PC5",
+      "variance_explained": 2.16,
+      "cumulative_variance": 30.52
+    },
+    {
+      "component": "PC6",
+      "variance_explained": 1.79,
+      "cumulative_variance": 32.31
+    },
+    {
+      "component": "PC7",
+      "variance_explained": 1.68,
+      "cumulative_variance": 33.99
+    },
+    {
+      "component": "PC8",
+      "variance_explained": 1.39,
+      "cumulative_variance": 35.38
+    },
+    {
+      "component": "PC9",
+      "variance_explained": 1.26,
+      "cumulative_variance": 36.64
+    },
+    {
+      "component": "PC10",
+      "variance_explained": 1.17,
+      "cumulative_variance": 37.81
+    }
+  ],
+  "mean_inter_sample_correlation": 0.841
+}

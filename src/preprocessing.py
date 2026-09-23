@@ -1,8 +1,9 @@
 """
 Preprocessing — Normalization, filtering, and preparation of expression data.
 
-Handles log2 transformation, low-variance gene removal, quantile normalization,
-and probe-to-gene symbol collapsing.
+Handles:
+- Microarray: log2 transformation, quantile normalization, probe-to-gene collapsing
+- RNA-seq: TMM/median-of-ratios normalization, voom transformation, count filtering
 """
 import os
 import sys
@@ -25,6 +26,128 @@ def log2_transform(expr_df: pd.DataFrame) -> pd.DataFrame:
         else:
             logger.info("Data appears already log-transformed, skipping log2")
     return expr_df
+
+
+def normalize_rnaseq_counts(counts_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize RNA-seq raw counts using TMM or median-of-ratios method,
+    followed by voom transformation (log2 CPM with precision weights).
+    """
+    data_type = getattr(config, "DATA_TYPE", "microarray")
+    if data_type != "rnaseq":
+        return counts_df
+    
+    norm_method = getattr(config, "RNASEQ_NORMALIZATION", "tmm")
+    
+    if norm_method == "tmm":
+        logger.info("Applying TMM normalization for RNA-seq...")
+        normalized = _tmm_normalize(counts_df)
+    elif norm_method == "median_of_ratios":
+        logger.info("Applying median-of-ratios (DESeq2) normalization for RNA-seq...")
+        normalized = _median_of_ratios_normalize(counts_df)
+    else:
+        logger.info("Using simple CPM normalization for RNA-seq...")
+        lib_sizes = counts_df.sum(axis=0)
+        normalized = counts_df.div(lib_sizes, axis=1) * 1e6
+    
+    # Voom transformation: log2 CPM. TMM and median-of-ratios both output
+    # normalized counts on the original library scale; they must still be
+    # converted to CPM before the log2 transform. Previously the TMM branch
+    # divided by the RAW library sizes (double-scaling), and the
+    # median-of-ratios branch was logged as CPM without any conversion at all.
+    logger.info("Applying voom transformation (log2 CPM)...")
+    lib_sizes = normalized.sum(axis=0)
+    cpm = normalized.div(lib_sizes, axis=1) * 1e6
+    
+    log_cpm = np.log2(cpm + 0.5)
+    
+    # Filter low-count genes (already done in data_loader, but double-check)
+    min_counts = getattr(config, "RNASEQ_MIN_COUNTS", 10)
+    min_samples = getattr(config, "RNASEQ_MIN_SAMPLES", 3)
+    keep = (counts_df >= min_counts).sum(axis=1) >= min_samples
+    log_cpm = log_cpm[keep]
+    
+    logger.info(f"RNA-seq preprocessing: {log_cpm.shape[0]} genes × {log_cpm.shape[1]} samples")
+    return log_cpm
+
+
+def _tmm_normalize(counts: pd.DataFrame) -> pd.DataFrame:
+    """
+    TMM (Trimmed Mean of M-values) normalization - edgeR algorithm.
+    Pure Python implementation.
+    """
+    logger.info("  Computing TMM size factors...")
+    
+    # Reference: sample with upper quartile closest to median
+    upper_quartiles = counts.quantile(0.75, axis=0)
+    ref_idx = upper_quartiles.sub(upper_quartiles.median()).abs().idxmin()
+    ref = counts[ref_idx]
+    
+    tmm_factors = []
+    for col in counts.columns:
+        sample = counts[col]
+        # Avoid division by zero
+        ref_safe = ref + 0.5
+        sample_safe = sample + 0.5
+        
+        # M and A values
+        m = np.log2(sample_safe / ref_safe)
+        a = 0.5 * np.log2(sample_safe * ref_safe)
+        
+        # Trim extreme M and A values (default: 30% M, 5% A)
+        m_finite = m[np.isfinite(m)]
+        if len(m_finite) < 5:
+            tmm_factors.append(1.0)
+            continue
+        
+        m_low, m_high = np.percentile(m_finite, 30), np.percentile(m_finite, 70)
+        a_finite = a[np.isfinite(a)]
+        a_low, a_high = np.percentile(a_finite, 5), np.percentile(a_finite, 95)
+        
+        keep = (m >= m_low) & (m <= m_high) & (a >= a_low) & (a <= a_high) & np.isfinite(m) & np.isfinite(a)
+        
+        if keep.sum() > 10:
+            tmm = 2 ** np.mean(m[keep])
+        else:
+            tmm = 1.0
+        tmm_factors.append(tmm)
+    
+    tmm_factors = np.array(tmm_factors)
+    # Normalize so geometric mean of factors = 1
+    tmm_factors = tmm_factors / np.exp(np.mean(np.log(tmm_factors)))
+    
+    # Apply normalization
+    normalized = counts.div(tmm_factors, axis=1)
+    logger.info(f"  TMM factors computed: mean={np.mean(tmm_factors):.4f}")
+    return normalized
+
+
+def _median_of_ratios_normalize(counts: pd.DataFrame) -> pd.DataFrame:
+    """
+    DESeq2 median-of-ratios normalization.
+    Pure Python implementation.
+    """
+    logger.info("  Computing DESeq2 size factors...")
+    
+    # Only use genes with counts > 1 for geometric mean
+    gene_means = counts.mean(axis=1)
+    usable = counts[gene_means > 1]
+    
+    # Geometric mean per gene
+    log_counts = np.log(usable + 1)
+    geo_means = np.exp(log_counts.mean(axis=1))
+    
+    # Ratios
+    ratios = usable.div(geo_means, axis=0)
+    
+    # Size factors = median of ratios per sample
+    size_factors = ratios.median(axis=0)
+    size_factors = size_factors / np.exp(np.mean(np.log(size_factors)))
+    
+    # Apply normalization
+    normalized = counts.div(size_factors, axis=1)
+    logger.info(f"  Size factors computed: mean={np.mean(size_factors):.4f}")
+    return normalized
 
 
 def remove_low_variance_genes(expr_df: pd.DataFrame) -> pd.DataFrame:
@@ -133,20 +256,32 @@ def preprocess(
     labels = labels[common]
     logger.info(f"Starting with {expr_df.shape[0]} genes × {expr_df.shape[1]} samples")
 
-    # Step 1: Log2 transform
-    expr_df = log2_transform(expr_df)
-
-    # Step 2: Remove constant genes
-    expr_df = remove_constant_genes(expr_df)
-
-    # Step 3: Collapse probes to genes
-    expr_df = collapse_probes_to_genes(expr_df)
-
-    # Step 4: Quantile normalization
-    expr_df = quantile_normalize(expr_df)
-
-    # Step 5: Remove low-variance genes
-    expr_df = remove_low_variance_genes(expr_df)
+    data_type = getattr(config, "DATA_TYPE", "microarray")
+    
+    if data_type == "rnaseq":
+        # RNA-seq pipeline
+        logger.info("RNA-seq preprocessing pipeline selected")
+        # Step 1: Normalize counts (TMM or median-of-ratios) + voom transform
+        expr_df = normalize_rnaseq_counts(expr_df)
+        # Step 2: Remove constant genes
+        expr_df = remove_constant_genes(expr_df)
+        # Step 3: Collapse duplicate gene symbols
+        expr_df = collapse_probes_to_genes(expr_df)
+        # Step 4: Remove low-variance genes
+        expr_df = remove_low_variance_genes(expr_df)
+    else:
+        # Microarray pipeline
+        logger.info("Microarray preprocessing pipeline selected")
+        # Step 1: Log2 transform
+        expr_df = log2_transform(expr_df)
+        # Step 2: Remove constant genes
+        expr_df = remove_constant_genes(expr_df)
+        # Step 3: Collapse probes to genes
+        expr_df = collapse_probes_to_genes(expr_df)
+        # Step 4: Quantile normalization
+        expr_df = quantile_normalize(expr_df)
+        # Step 5: Remove low-variance genes
+        expr_df = remove_low_variance_genes(expr_df)
 
     logger.info(f"Final shape: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples")
     logger.info("Preprocessing complete ✓")

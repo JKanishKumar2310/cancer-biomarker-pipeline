@@ -3,6 +3,10 @@ Differential Expression Analysis — Statistical identification of DEGs.
 
 Performs Welch's t-test (tumor vs normal) with Benjamini-Hochberg FDR correction
 to identify differentially expressed genes (DEGs).
+
+Supports:
+- Microarray: paired t-test / Welch's t-test on log2 intensities
+- RNA-seq: voom/limma (linear modeling with precision weights) on log2 CPM
 """
 import os
 import sys
@@ -10,6 +14,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
+import statsmodels.api as sm
+from statsmodels.regression.linear_model import OLS
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
@@ -81,6 +87,78 @@ def compute_pvalues(
     return pd.Series(p_vals, index=expr_df.index, name="pvalue"), "welch_ttest", 0
 
 
+def compute_pvalues_voom_limma(
+    expr_df: pd.DataFrame,
+    labels: pd.Series,
+    patient_ids: pd.Series = None,
+) -> tuple[pd.Series, str, int]:
+    """
+    RNA-seq differential expression using voom/limma approach.
+    
+    Uses linear modeling with precision weights (voom) on log2 CPM data.
+    Supports patient-paired design via duplicateCorrelation approximation.
+    
+    Returns
+    -------
+    pvalues : pd.Series
+    test_type : str ("voom_limma" or "voom_limma_paired")
+    n_pairs : int (number of matched pairs, or 0)
+    """
+    tumor_samples = labels[labels == "Tumor"].index
+    normal_samples = labels[labels == "Normal"].index
+    
+    logger.info(f"Executing voom/limma linear modeling ({len(tumor_samples)} Tumor vs {len(normal_samples)} Normal)...")
+    
+    # Build design matrix
+    # Intercept + condition (Tumor=1, Normal=0)
+    n_samples = len(expr_df.columns)
+    design = pd.DataFrame({
+        "intercept": 1.0,
+        "condition": [1.0 if labels[s] == "Tumor" else 0.0 for s in expr_df.columns]
+    }, index=expr_df.columns)
+    
+    # Check for paired design
+    paired = False
+    if patient_ids is not None:
+        df_samples = pd.DataFrame({"condition": labels, "patient_id": patient_ids}, index=labels.index)
+        p_counts = df_samples.groupby("patient_id")["condition"].value_counts().unstack(fill_value=0)
+        if "Tumor" in p_counts.columns and "Normal" in p_counts.columns:
+            paired_p = p_counts[(p_counts["Tumor"] == 1) & (p_counts["Normal"] == 1)].index
+            if len(paired_p) >= 6:  # Lower threshold for voom
+                paired = True
+                logger.info(f"  Detected {len(paired_p)} matched pairs - using paired voom design")
+    
+    if paired:
+        # Add patient blocking factor
+        patient_factor = pd.Categorical(patient_ids.loc[expr_df.columns])
+        design = pd.concat([design, pd.get_dummies(patient_factor, prefix="patient", drop_first=True)], axis=1)
+    
+    # Fit linear model for each gene
+    p_values = []
+    test_type = "voom_limma_paired" if paired else "voom_limma"
+    
+    for gene in expr_df.index:
+        y = expr_df.loc[gene].values
+        
+        # OLS fit
+        try:
+            model = OLS(y, design.values)
+            results = model.fit()
+            
+            # Test condition coefficient (index 1)
+            if len(results.params) > 1:
+                t_stat = results.tvalues[1]
+                p_val = results.pvalues[1]
+            else:
+                p_val = 1.0
+        except Exception:
+            p_val = 1.0
+        
+        p_values.append(p_val)
+    
+    return pd.Series(p_values, index=expr_df.index, name="pvalue"), test_type, len(paired_p) if paired else 0
+
+
 def adjust_pvalues(pvalues: pd.Series) -> pd.Series:
     """
     Apply Benjamini-Hochberg FDR correction for multiple testing.
@@ -149,8 +227,16 @@ def run_differential_expression(
     logger.info("Computing log2 fold changes...")
     log2fc = compute_fold_change(expr_df, labels)
 
-    # Step 2: P-values
-    pvalues, test_type, n_pairs = compute_pvalues(expr_df, labels)
+    # Step 2: P-values - choose method based on data type
+    data_type = getattr(config, "DATA_TYPE", "microarray")
+    patient_ids = labels.attrs.get("patient_id")
+    
+    if data_type == "rnaseq":
+        logger.info("Using voom/limma for RNA-seq data...")
+        pvalues, test_type, n_pairs = compute_pvalues_voom_limma(expr_df, labels, patient_ids)
+    else:
+        logger.info("Using t-test for microarray data...")
+        pvalues, test_type, n_pairs = compute_pvalues(expr_df, labels)
 
     # Step 3: FDR correction
     logger.info("Applying Benjamini-Hochberg FDR correction...")

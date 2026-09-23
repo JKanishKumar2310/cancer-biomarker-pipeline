@@ -1,0 +1,30 @@
+# Direct dependencies for Cancer Biomarker Discovery Pipeline
+# Compile with: pip-compile --generate-hashes requirements.in -o requirements.txt
+
+# Core data science
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+statsmodels>=0.14.0
+joblib>=1.3.0
+
+# Visualization & Dashboard
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+dash>=2.14.0
+dash-bootstrap-components>=1.5.0
+
+# Bioinformatics
+GEOparse>=2.0.3
+gseapy>=1.1.0
+
+# Optional: Batch correction (ComBat)
+pycombat>=0.1.1
+
+# Optional: RNA-seq support (pure Python voom/limma via statsmodels)
+# No R/rpy2 dependency needed
+
+# Optional: Multi-cohort meta-analysis
+# Uses existing scipy/statsmodels for fixed-effects inverse-variance weighting

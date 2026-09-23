@@ -44,17 +44,58 @@ _EXT_COHORT_MAP = {
 }
 
 
+class ExternalValidationUnavailable(ValueError):
+    """An independent external cohort could not be established."""
+
+
 def _get_ext_info() -> dict:
+    from src.ai_annotator import validate_validation_cohort
+
     val_info = getattr(config, "VALIDATION_COHORT", None)
-    if isinstance(val_info, dict) and "accession" in val_info:
-        acc = val_info["accession"]
-        return {
-            "accession": acc,
-            "platform": val_info.get("platform", "GPL570"),
-            "description": val_info.get("label", f"{acc} External Validation Cohort"),
-            "matrix_url": f"https://ftp.ncbi.nlm.nih.gov/geo/series/{acc[:5]}nnn/{acc}/matrix/{acc}_series_matrix.txt.gz",
-        }
-    return _EXT_COHORT_MAP.get(config.GEO_ACCESSION, _EXT_COHORT_MAP["GSE15852"])
+    if val_info is None:
+        discovery = str(config.GEO_ACCESSION).strip().upper()
+        val_info = _EXT_COHORT_MAP.get(discovery)
+    # Revalidate config/cache entries at use time; discovery may have changed.
+    val_info = validate_validation_cohort(val_info)
+    if val_info.get("status") == "UNAVAILABLE":
+        raise ExternalValidationUnavailable(val_info.get("reason", "External validation unavailable."))
+    acc = val_info["accession"]
+    return {
+        "accession": acc,
+        "platform": val_info.get("platform", "GPL570"),
+        "description": val_info.get("label", val_info.get("description", f"{acc} External Validation Cohort")),
+        "matrix_url": f"https://ftp.ncbi.nlm.nih.gov/geo/series/{acc[:-3]}nnn/{acc}/matrix/{acc}_series_matrix.txt.gz",
+    }
+
+
+def _unavailable_result(reason: str, force_synthetic: bool, status: str = "UNAVAILABLE") -> dict:
+    """Overwrite stale success artifacts without fabricating performance or a ROC."""
+    logger.warning(f"External validation unavailable: {reason}")
+    result = {
+        "accuracy": float("nan"), "roc_auc": float("nan"),
+        "sensitivity": float("nan"), "specificity": float("nan"),
+        "status": status, "reason": reason,
+        "signature_genes": [], "roc_curve": {"fpr": [], "tpr": []},
+    }
+    # Test mode already redirects RESULTS_DIR into .../synthetic_test; don't nest deeper.
+    out_dir = config.RESULTS_DIR if os.path.basename(os.path.normpath(config.RESULTS_DIR)) == "synthetic_test" else os.path.join(config.RESULTS_DIR, "synthetic_test") if force_synthetic else config.RESULTS_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    pd.DataFrame([{
+        "discovery_cohort": config.GEO_ACCESSION,
+        "external_cohort": "Unavailable",
+        "status": status, "error_details": reason,
+        "test_accuracy": result["accuracy"], "roc_auc": result["roc_auc"],
+        "sensitivity": result["sensitivity"], "specificity": result["specificity"],
+        "data_provenance": "External validation not performed",
+    }]).to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
+    pd.DataFrame(columns=["fpr", "tpr"]).to_csv(os.path.join(out_dir, "external_roc_curve.csv"), index=False)
+    return result
+
+
+def _sample_ids(expression: pd.DataFrame, labels: pd.Series) -> set[str]:
+    """Normalize IDs from both tables, including samples dropped in preprocessing."""
+    return {str(value).strip().upper() for value in list(expression.columns) + list(labels.index)
+            if pd.notna(value) and str(value).strip()}
 
 
 def _create_synthetic_external_cohort() -> tuple[pd.DataFrame, pd.Series]:
@@ -171,13 +212,18 @@ def load_external_cohort(force_synthetic: bool = False) -> tuple[pd.DataFrame, p
         logger.info(f"{ext_acc} loaded & cached: {expr_df.shape[0]} genes × {expr_df.shape[1]} samples ({dict(labels.value_counts())})")
         return expr_df, labels
     except Exception as e:
-        logger.warning(f"Failed to process real {ext_acc} cohort ({e}), using test cohort.")
-        return _create_synthetic_external_cohort()
+        raise ExternalValidationUnavailable(f"Failed to process authentic external cohort {ext_acc}: {e}") from e
 
 
 def run_external_validation(force_synthetic: bool = False) -> dict:
     """Train RF on discovery cohort and evaluate on external cohort (zero-shot)."""
-    info = _get_ext_info()
+    if force_synthetic:
+        info = {"accession": "SYNTHETIC", "description": "Synthetic external cohort (test mode)"}
+    else:
+        try:
+            info = _get_ext_info()
+        except ExternalValidationUnavailable as exc:
+            return _unavailable_result(str(exc), force_synthetic)
     logger.info("=" * 60)
     logger.info("CROSS-COHORT EXTERNAL VALIDATION")
     logger.info("=" * 60)
@@ -187,7 +233,13 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
     from src.preprocessing import preprocess
 
     train_expr, train_labels = load_data(force_synthetic=force_synthetic)
-    train_clean, _ = preprocess(train_expr, train_labels)
+    # Prefer the PREPROCESSED labels: preprocess() may drop samples (QC/unknown),
+    # and X_train rows below must align 1:1 with y_train or sklearn raises a
+    # found-array-with-inconsistent-number-of-samples error. A None result
+    # (preprocessing skipped) falls back to the raw labels unchanged.
+    train_clean, cleaned_labels = preprocess(train_expr, train_labels)
+    if cleaned_labels is not None:
+        train_labels = cleaned_labels
 
     # 2. Load Consensus Biomarker Signature
     cons_file = os.path.join(config.RESULTS_DIR, "consensus_biomarkers.csv")
@@ -200,61 +252,40 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
     logger.info(f"Using {len(sig_genes)} consensus biomarker genes for signature model: {sig_genes[:6]}...")
 
     # 3. Load External Cohort
-    test_expr, test_labels = load_external_cohort(force_synthetic=force_synthetic)
+    try:
+        test_expr, test_labels = load_external_cohort(force_synthetic=force_synthetic)
+    except ExternalValidationUnavailable as exc:
+        return _unavailable_result(str(exc), force_synthetic)
 
-    # Find common genes in signature (with case-insensitive normalization to support cross-platform / orthologs)
-    train_clean_upper = {str(g).upper(): g for g in train_clean.index}
-    test_expr_upper = {str(g).upper(): g for g in test_expr.index}
-
-    valid_sig_pairs = []
-    for g in sig_genes:
-        g_u = str(g).upper()
-        if g_u in train_clean_upper and g_u in test_expr_upper:
-            valid_sig_pairs.append((train_clean_upper[g_u], test_expr_upper[g_u]))
-
-    if len(valid_sig_pairs) == 0:
-        for g in config.KNOWN_MARKERS:
-            g_u = str(g).upper()
-            if g_u in train_clean_upper and g_u in test_expr_upper:
-                valid_sig_pairs.append((train_clean_upper[g_u], test_expr_upper[g_u]))
-
-    if len(valid_sig_pairs) == 0:
-        common_upper = set(train_clean_upper.keys()).intersection(set(test_expr_upper.keys()))
-        for g_u in list(common_upper)[:min(20, len(common_upper))]:
-            valid_sig_pairs.append((train_clean_upper[g_u], test_expr_upper[g_u]))
-
-    train_sig_genes = [p[0] for p in valid_sig_pairs]
-    test_sig_genes = [p[1] for p in valid_sig_pairs]
-
-    logger.info(f"Common signature genes present in both cohorts: {len(valid_sig_pairs)}/{len(sig_genes)}")
-
-    if len(valid_sig_pairs) == 0:
-        logger.warning(
-            f"Zero overlapping signature genes found between discovery ({config.GEO_ACCESSION}) and external ({info['accession']}) cohorts."
+    overlap = _sample_ids(train_expr, train_labels) & _sample_ids(test_expr, test_labels)
+    if overlap:
+        return _unavailable_result(
+            f"Discovery and external cohorts share {len(overlap)} sample ID(s); independence is not established.",
+            force_synthetic, status="SAMPLE_OVERLAP",
         )
-        out_dir = os.path.join(config.RESULTS_DIR, "synthetic_test") if force_synthetic else config.RESULTS_DIR
-        os.makedirs(out_dir, exist_ok=True)
-        metrics_df = pd.DataFrame([{
-            "discovery_cohort": config.GEO_ACCESSION,
-            "external_cohort": info["accession"],
-            "status": "ZERO_FEATURE_OVERLAP",
-            "test_accuracy": np.nan,
-            "roc_auc": np.nan,
-            "error_details": f"Zero overlapping features between discovery cohort ({config.GEO_ACCESSION}) and external cohort ({info['accession']}).",
-        }])
-        metrics_df.to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
-        roc_df = pd.DataFrame({"fpr": [0.0, 1.0], "tpr": [0.0, 1.0]})
-        roc_df.to_csv(os.path.join(out_dir, "external_roc_curve.csv"), index=False)
-        return {"accuracy": float("nan"), "roc_auc": float("nan"), "status": "ZERO_FEATURE_OVERLAP", "overlap_count": 0}
+
+    # Find common genes in signature
+    valid_sig = [g for g in sig_genes if g in train_clean.index and g in test_expr.index]
+    if len(valid_sig) == 0:
+        valid_sig = [g for g in config.KNOWN_MARKERS if g in train_clean.index and g in test_expr.index]
+    if len(valid_sig) == 0:
+        common = list(train_clean.index.intersection(test_expr.index))
+        valid_sig = common[:min(20, len(common))]
+
+    logger.info(f"Common signature genes present in both cohorts: {len(valid_sig)}/{len(sig_genes)}")
+
+    if len(valid_sig) == 0:
+        return _unavailable_result("No overlapping signature genes between discovery and external cohorts.",
+                                   force_synthetic, status="ZERO_FEATURE_OVERLAP")
 
     # 4. Train on Discovery, Test on External
-    X_train = train_clean.loc[train_sig_genes].T.values
+    X_train = train_clean.loc[valid_sig].T.values
     y_train = (train_labels == "Tumor").astype(int).values
 
     rf = RandomForestClassifier(n_estimators=500, random_state=config.RANDOM_SEED, n_jobs=-1)
     rf.fit(X_train, y_train)
 
-    X_test = test_expr.loc[test_sig_genes].T.values
+    X_test = test_expr.loc[valid_sig].T.values
     y_test = (test_labels == "Tumor").astype(int).values
 
     test_preds = rf.predict(X_test)
@@ -297,8 +328,8 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
         "disease_matched": True,
         "n_train_samples": len(train_labels),
         "n_test_samples": len(test_labels),
-        "signature_genes_tested": len(train_sig_genes),
-        "signature_gene_list": ";".join(train_sig_genes),
+        "signature_genes_tested": len(valid_sig),
+        "signature_gene_list": ";".join(valid_sig),
         "test_accuracy": acc,
         "roc_auc": auc,
         "sensitivity": sensitivity,
@@ -310,14 +341,14 @@ def run_external_validation(force_synthetic: bool = False) -> dict:
         "data_provenance": "Authentic NCBI GEO Cross-Cohort Transfer (Zero Retraining)",
     }])
 
-    out_dir = os.path.join(config.RESULTS_DIR, "synthetic_test") if force_synthetic else config.RESULTS_DIR
+    out_dir = config.RESULTS_DIR if os.path.basename(os.path.normpath(config.RESULTS_DIR)) == "synthetic_test" else os.path.join(config.RESULTS_DIR, "synthetic_test") if force_synthetic else config.RESULTS_DIR
     os.makedirs(out_dir, exist_ok=True)
     metrics_df.to_csv(os.path.join(out_dir, "external_validation_metrics.csv"), index=False)
     pd.DataFrame({"fpr": fpr, "tpr": tpr}).to_csv(os.path.join(out_dir, "external_roc_curve.csv"), index=False)
 
     logger.info("Cross-cohort external validation complete ✓")
     return {"accuracy": acc, "roc_auc": auc, "sensitivity": sensitivity,
-            "specificity": specificity, "signature_genes": train_sig_genes,
+            "specificity": specificity, "signature_genes": valid_sig,
             "roc_curve": {"fpr": fpr.tolist(), "tpr": tpr.tolist()}}
 
 

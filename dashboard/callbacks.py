@@ -88,38 +88,32 @@ def register_callbacks(app):
     )
     def update_welcome_banner(active_cohort):
         if not active_cohort:
-            return dbc.Alert(
+            return html.Div(
                 [
                     html.Div([
-                        html.H4("🔬 Platform in Standby Mode — No Dataset Loaded", className="m-0", style={"color": CYAN, "fontWeight": "700"}),
-                        dbc.Badge("Awaiting Selection", color="warning", className="ms-2 p-2"),
+                        html.Span("Workspace in Standby Mode", style={"fontWeight": "600", "color": "var(--text-primary)", "fontSize": "0.95rem"}),
+                        dbc.Badge("Awaiting Dataset Selection", color="secondary", className="ms-2 px-2 py-1", style={"fontSize": "0.72rem"}),
                     ], className="d-flex align-items-center mb-2"),
                     html.P(
-                        "Welcome to the Autonomous Cancer Biomarker Discovery Platform. "
-                        "The workspace is currently in a clean standby state. To begin computational discovery, "
-                        "click one of the validated fast-load cohorts above or type any NCBI GEO accession into the search bar.",
-                        className="mb-2 text-light",
-                        style={"fontSize": "0.95rem"}
+                        "The computational pipeline is idle. Select one of the fast-load validated oncology cohorts above or enter an NCBI GEO accession to initialize transcriptomic profiling.",
+                        className="mb-2",
+                        style={"fontSize": "0.83rem", "color": "var(--text-muted)"}
                     ),
                     html.Div([
-                        html.B("Validated Fast-Load Cohorts: ", style={"color": "#38bdf8"}),
-                        html.Span("• Colon (GSE8671, Wnt pathway)  • Lung NSCLC (GSE19804, Semaphorins)  • Breast (GSE15852, Luminal Keratins)", style={"color": "#94a3b8"}),
-                    ], style={"fontSize": "0.85rem"}),
+                        html.B("Validated Fast-Load Cohorts: ", style={"color": "var(--accent-blue)", "fontWeight": "600"}),
+                        html.Span("Oral (GSE30784) • Colon (GSE8671) • Kidney (GSE53757) • Lung NSCLC (GSE19804) • Breast (GSE15852)", style={"color": "var(--text-secondary)"}),
+                    ], style={"fontSize": "0.78rem"}),
                 ],
-                style={
-                    "backgroundColor": "rgba(15, 23, 42, 0.85)",
-                    "border": f"1px dashed {CYAN}",
-                    "borderRadius": "12px",
-                    "padding": "20px",
-                    "marginBottom": "20px",
-                }
+                className="command-card mb-3",
+                style={"border": "1px dashed var(--border-medium)"}
             )
         acc = active_cohort.get("accession", "Active")
         ctype = active_cohort.get("cancer_type", "Cancer")
-        return dbc.Alert([
-            html.B(f"🎯 Active Cohort Loaded: {acc} "),
-            f"— {ctype}. All differential expression, machine learning, and multi-omics tabs are live!",
-        ], color="info", className="p-2 mb-3", style={"fontSize": "0.88rem"})
+        return html.Div([
+            html.Span("Active Cohort: ", style={"color": "var(--text-muted)", "fontWeight": "500"}),
+            html.B(f"{acc} ", style={"color": "var(--accent-blue)"}),
+            html.Span(f"— {ctype}. Full statistical, machine learning, and multi-omics suites are synchronized.", style={"color": "var(--text-secondary)"}),
+        ], className="command-card p-2 mb-3", style={"fontSize": "0.82rem"})
 
     # ── Stats Row ────────────────────────────────────────────
     @app.callback(
@@ -137,11 +131,11 @@ def register_callbacks(app):
 
         if not active_cohort or len(de) == 0:
             cards = [
-                make_stat_card("—", "Total Genes", "cyan", 1),
-                make_stat_card("—", "Upregulated", "green", 2),
-                make_stat_card("—", "Downregulated", "pink", 3),
-                make_stat_card("—", "Consensus Biomarkers", "purple", 4),
-                make_stat_card("—", "Samples", "orange", 5),
+                make_stat_card("—", "Total Genes", "cyan", 1, "Transcripts Profiled"),
+                make_stat_card("—", "Upregulated", "green", 2, "Log2FC > 1.0, FDR < 0.05"),
+                make_stat_card("—", "Downregulated", "pink", 3, "Log2FC < -1.0, FDR < 0.05"),
+                make_stat_card("—", "Consensus Markers", "purple", 4, "DE ∩ Random Forest"),
+                make_stat_card("—", "Cohort Samples", "orange", 5, "Tumor & Normal"),
             ]
             return html.Div(cards, style={"display": "contents"})
 
@@ -152,11 +146,11 @@ def register_callbacks(app):
         n_samples = expr.shape[1] if len(expr) > 0 else 0
 
         cards = [
-            make_stat_card(f"{total_genes:,}", "Total Genes", "cyan", 1),
-            make_stat_card(n_up, "Upregulated", "green", 2),
-            make_stat_card(n_down, "Downregulated", "pink", 3),
-            make_stat_card(n_consensus, "Consensus Biomarkers", "purple", 4),
-            make_stat_card(n_samples, "Samples", "orange", 5),
+            make_stat_card(f"{total_genes:,}", "Total Genes", "cyan", 1, "Transcripts Profiled"),
+            make_stat_card(f"{n_up:,}", "Upregulated", "green", 2, "Log2FC > 1.0, FDR < 0.05"),
+            make_stat_card(f"{n_down:,}", "Downregulated", "pink", 3, "Log2FC < -1.0, FDR < 0.05"),
+            make_stat_card(f"{n_consensus:,}", "Consensus Markers", "purple", 4, "DE ∩ Random Forest"),
+            make_stat_card(f"{n_samples:,}", "Cohort Samples", "orange", 5, "Tumor & Normal"),
         ]
         return html.Div(cards, style={"display": "contents"})
 
@@ -826,6 +820,8 @@ def register_callbacks(app):
     def activate_cached_cohort(accession: str, cancer_type: str):
         import shutil
         cache_dir = os.path.join(config.BASE_DIR, "results_cache", accession)
+        if not os.path.isfile(os.path.join(cache_dir, "consensus_biomarkers.csv")):
+            return False
         if os.path.exists(cache_dir):
             for f in os.listdir(cache_dir):
                 src = os.path.join(cache_dir, f)
@@ -843,6 +839,7 @@ def register_callbacks(app):
         config.CANCER_TYPE = cancer_type
         RESULTS.clear()
         RESULTS.update(load_results())
+        return True
 
     @app.callback(
         [
@@ -871,6 +868,20 @@ def register_callbacks(app):
         if triggered == "btn-reset-cohort":
             RESULTS.clear()
             return None, "Autonomous Discovery Pipeline • Standby: Select or Search a Cohort to Begin", dbc.Alert("🔄 Platform reset to standby mode. Select a cohort above to begin.", color="secondary", dismissable=True), ""
+
+        quick_accessions = {
+            "btn-quick-gse53757": "GSE53757", "btn-quick-gse30784": "GSE30784",
+            "btn-quick-gse8671": "GSE8671", "btn-quick-gse19804": "GSE19804",
+            "btn-quick-gse15852": "GSE15852",
+        }
+        if triggered in quick_accessions:
+            requested = quick_accessions[triggered]
+            cache_file = os.path.join(config.BASE_DIR, "results_cache", requested, "consensus_biomarkers.csv")
+            if not os.path.isfile(cache_file):
+                return no_update, no_update, dbc.Alert(
+                    f"No analysis cache is available for {requested}. The active cohort is unchanged. Enter the accession and run analysis first.",
+                    color="warning", dismissable=True,
+                ), no_update
 
         if triggered == "btn-quick-gse53757":
             activate_cached_cohort("GSE53757", "Clear Cell Renal Cell Carcinoma (ccRCC)")

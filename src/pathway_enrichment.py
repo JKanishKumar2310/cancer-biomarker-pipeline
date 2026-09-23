@@ -93,7 +93,8 @@ CANONICAL_PATHWAYS = {
 def run_pathway_enrichment(
     genes: list[str],
     background_gene_count: int = 16500,
-    pathway_db: dict = None
+    pathway_db: dict = None,
+    background_genes: list[str] = None,
 ) -> pd.DataFrame:
     """
     Execute Over-Representation Analysis (ORA) via Fisher's Exact test.
@@ -115,20 +116,27 @@ def run_pathway_enrichment(
         pathway_db = CANONICAL_PATHWAYS
 
     query_genes = set(g.strip().upper() for g in genes if isinstance(g, str) and g.strip())
-    k = len(query_genes)  # Number of input genes
-    N = background_gene_count
+    universe = None
+    if background_genes is not None:
+        universe = {g.strip().upper() for g in background_genes if isinstance(g, str) and g.strip()}
+        query_genes &= universe
+    k = len(query_genes)
+    N = len(universe) if universe is not None else background_gene_count
+    if N <= 0 and (query_genes or universe is None):
+        raise ValueError("The enrichment background must be positive.")
 
     results = []
 
     for pathway_name, p_genes in pathway_db.items():
         path_set = set(g.strip().upper() for g in p_genes)
-        M = len(path_set)  # Pathway size
+        if universe is not None:
+            path_set &= universe
+        M = len(path_set)
 
         overlap = query_genes.intersection(path_set)
-        x = len(overlap)   # Overlap count
-
-        if x == 0:
-            continue
+        x = len(overlap)
+        if N < len(query_genes | path_set):
+            raise ValueError("Background size is smaller than the query/pathway union.")
 
         # 2x2 contingency table for Fisher's Exact Test:
         #                 In Pathway    Not In Pathway
@@ -136,16 +144,14 @@ def run_pathway_enrichment(
         # Not In Query      M - x         N - M - (k - x)
         table = [
             [x, k - x],
-            [M - x, max(0, N - M - (k - x))]
+            [M - x, N - M - (k - x)]
         ]
 
-        try:
-            odds_ratio, p_val = fisher_exact(table, alternative="greater")
-        except Exception:
-            p_val = 1.0
+        # Zero-overlap hypotheses remain in the full multiple-testing family.
+        p_val = fisher_exact(table, alternative="greater").pvalue if x else 1.0
 
         # Expected overlap by chance
-        expected = (k * M) / N
+        expected = (k * M) / N if N else 0.0
         fold_enrichment = (x / expected) if expected > 0 else 0.0
 
         # Extract Database Category
@@ -164,7 +170,8 @@ def run_pathway_enrichment(
     if not results:
         return pd.DataFrame(columns=[
             "pathway", "database", "overlap_count", "pathway_size", "fold_enrichment",
-            "p_value", "adjusted_p_value", "neg_log10_fdr", "genes"
+            "p_value", "adjusted_p_value", "neg_log10_fdr", "genes",
+            "Term", "Gene_set", "Adjusted P-value", "P-value", "Genes", "Overlap"
         ])
 
     df = pd.DataFrame(results)
@@ -180,10 +187,17 @@ def run_pathway_enrichment(
     for i in range(m - 2, -1, -1):
         adj_p[i] = min(adj_p[i], adj_p[i + 1])
 
-    df["adjusted_p_value"] = [float(f"{p:.2e}") if p < 0.001 else round(p, 4) for p in adj_p]
-    df["neg_log10_fdr"] = [round(-np.log10(max(p, 1e-300)), 2) for p in adj_p]
+    df["adjusted_p_value"] = adj_p
+    df["neg_log10_fdr"] = [-np.log10(max(p, 1e-300)) for p in adj_p]
 
-    return df
+    # Preserve the established export contract used by the dashboard and plots.
+    df["Term"] = df["pathway"]
+    df["Gene_set"] = df["database"]
+    df["Adjusted P-value"] = df["adjusted_p_value"]
+    df["P-value"] = df["p_value"]
+    df["Genes"] = df["genes"]
+    df["Overlap"] = df["overlap_count"].astype(str) + "/" + df["pathway_size"].astype(str)
+    return df.loc[df["overlap_count"] > 0].reset_index(drop=True)
 
 
 def analyze_and_export_pathways(
@@ -199,11 +213,19 @@ def analyze_and_export_pathways(
         out_dir = config.RESULTS_DIR
     os.makedirs(out_dir, exist_ok=True)
 
-    sig_degs = de_df[de_df["significant"]]["gene"].dropna().tolist() if "significant" in de_df.columns else de_df["gene"].tolist()
+    if "regulation" in de_df.columns:
+        significant = de_df["regulation"].isin(["Upregulated", "Downregulated"])
+    elif {"adj_pvalue", "log2FC"}.issubset(de_df.columns):
+        significant = (de_df["adj_pvalue"] < config.PVALUE_THRESHOLD) & (de_df["log2FC"].abs() > config.FC_THRESHOLD)
+    elif "significant" in de_df.columns:
+        significant = de_df["significant"].eq(True)
+    else:
+        raise ValueError("DE results must include significance annotations or adjusted p-values and log2FC.")
+    sig_degs = de_df.loc[significant, "gene"].dropna().tolist()
     consensus_genes = consensus_df["gene"].dropna().tolist() if "gene" in consensus_df.columns else []
 
     combined_query = list(set(sig_degs + consensus_genes))
-    enrichment_df = run_pathway_enrichment(combined_query)
+    enrichment_df = run_pathway_enrichment(combined_query, background_genes=de_df["gene"].dropna().tolist())
 
     csv_path = os.path.join(out_dir, "pathway_enrichment.csv")
     enrichment_df.to_csv(csv_path, index=False)

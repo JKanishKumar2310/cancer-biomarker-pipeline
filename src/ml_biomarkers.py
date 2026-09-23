@@ -113,6 +113,55 @@ def _fit_ensemble_on_indices(
     }, index=gene_names).sort_values("ensemble_score", ascending=False)
     ranking["ml_rank"] = range(1, len(ranking) + 1)
     return ranking
+
+
+def _select_l1_C_inner_cv(
+    X: np.ndarray,
+    y: np.ndarray,
+    gene_names: list[str],
+    groups: np.ndarray | None = None,
+    c_grid: list[float] | None = None,
+) -> tuple[float, dict]:
+    """
+    Select optimal L1 regularization C via inner cross-validation.
+    
+    Option C: Pre-select C on the full training data using inner CV,
+    then lock it for the outer nested CV.
+    
+    Returns
+    -------
+    best_C : float
+    cv_scores : dict mapping C -> mean accuracy
+    """
+    if c_grid is None:
+        c_grid = getattr(config, "L1_C_GRID", [0.01, 0.03, 0.1, 0.3, 1.0, 3.0])
+    
+    logger.info(f"  Inner CV: selecting optimal L1 C from grid {c_grid}...")
+    
+    cv = _make_cv(y, groups, n_splits=min(3, config.N_SPLITS))
+    cv_scores = {}
+    
+    for C in c_grid:
+        l1_pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("l1", LogisticRegression(
+                random_state=config.RANDOM_SEED,
+                max_iter=1000,
+                C=C,
+                l1_ratio=1,
+                solver="liblinear",
+            )),
+        ])
+        scores = cross_val_score(l1_pipe, X, y, cv=cv, groups=groups, scoring="accuracy")
+        cv_scores[C] = float(scores.mean())
+        logger.info(f"    C={C}: mean_accuracy={scores.mean():.4f} +/- {scores.std():.4f}")
+    
+    best_C = max(cv_scores, key=cv_scores.get)
+    logger.info(f"  Selected optimal L1 C = {best_C} (accuracy={cv_scores[best_C]:.4f})")
+    
+    return best_C, cv_scores
+
+
 def train_ensemble_models(
     X: np.ndarray,
     y: np.ndarray,
@@ -379,6 +428,20 @@ def run_ml_biomarker_ranking(
     logger.info("=" * 60)
 
     X, y, gene_names, groups = _prepare_data(expr_df, labels)
+    
+    # L1 hyperparameter tuning (Option C: inner CV selects C, locked for nested)
+    if getattr(config, "ENABLE_L1_TUNING", True):
+        logger.info("STEP 1/3: L1 hyperparameter tuning (inner CV)...")
+        best_C, _ = _select_l1_C_inner_cv(X, y, gene_names, groups=groups)
+        # Override the L1 regularization C in config for this run.
+        # NOTE: the key must be "L1_LogisticRegression" — that is the dict the
+        # ensemble actually trains with; "LogisticRegression" was never read.
+        if "L1_LogisticRegression" in config.ML_MODELS:
+            config.ML_MODELS["L1_LogisticRegression"]["C"] = best_C
+        else:
+            config.ML_MODELS.setdefault("L1_LogisticRegression", {})["C"] = best_C
+        logger.info(f"L1 C locked at {best_C} for all subsequent CV folds")
+    
     ml_ranking, cv_metrics = train_ensemble_models(X, y, gene_names, groups=groups)
     consensus = find_consensus_biomarkers(ml_ranking, de_results)
 

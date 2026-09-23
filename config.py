@@ -49,6 +49,14 @@ if os.path.exists(env_path):
 GEO_ACCESSION = "GSE30784"  # 167 Oral Squamous Cell Carcinoma (OSCC) + 45 Normal oral mucosa (GPL570)
 CANCER_TYPE = "Oral Squamous Cell Carcinoma (OSCC)"
 
+# Multi-cohort discovery (fixed-effects meta-analysis)
+# Set DISCOVERY_COHORTS to a list of GEO accessions to enable meta-analysis
+# Example: DISCOVERY_COHORTS = ["GSE8671", "GSE20916"]
+DISCOVERY_COHORTS = []
+
+# Data type: "microarray" (default, Affymetrix/Illumina arrays) or "rnaseq" (raw counts)
+DATA_TYPE = "microarray"
+
 # ============================================================
 # Comparison Design
 # ============================================================
@@ -118,10 +126,12 @@ ML_MODELS = {
     },
     "L1_LogisticRegression": {
         "C": 0.1,
-        "penalty": "l1",
+        "l1_ratio": 1,  # pure L1 (penalty= kwarg is deprecated in sklearn >= 1.8)
         "solver": "liblinear",
     },
 }
+
+L1_C_GRID = [0.01, 0.03, 0.1, 0.3, 1.0, 3.0]
 
 # ============================================================
 # Pathway Analysis
@@ -136,6 +146,19 @@ ENRICHMENT_ORGANISM = "human"
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 8050
 DASHBOARD_DEBUG = True
+
+# ============================================================
+# Feature Flags (default OFF for backward compatibility)
+# ============================================================
+ENABLE_RNASEQ = False           # Enable RNA-seq count processing (voom/limma)
+ENABLE_META_ANALYSIS = False    # Enable multi-cohort fixed-effects meta-analysis
+ENABLE_BATCH_CORRECTION = False # Enable ComBat batch correction for multi-cohort
+ENABLE_L1_TUNING = True         # Enable L1 penalty hyperparameter tuning (inner CV)
+
+# RNA-seq specific (used when DATA_TYPE = "rnaseq" or ENABLE_RNASEQ = True)
+RNASEQ_NORMALIZATION = "tmm"    # "tmm" (edgeR) or "median_of_ratios" (DESeq2)
+RNASEQ_MIN_COUNTS = 10          # Minimum counts per gene for filtering
+RNASEQ_MIN_SAMPLES = 3          # Minimum samples with counts > RNASEQ_MIN_COUNTS
 
 # ============================================================
 # Known cancer marker genes (Colorectal Adenoma & Carcinoma Hallmarks)

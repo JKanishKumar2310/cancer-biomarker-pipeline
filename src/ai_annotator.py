@@ -201,6 +201,35 @@ _VALIDATION_FALLBACKS = {
 }
 
 
+def validate_validation_cohort(cohort: dict | None) -> dict:
+    """Fail closed on invalid or discovery-cohort selections, including cached ones.
+
+    A different accession is necessary, but does not establish patient independence.
+    Sample overlap is checked separately by the external validation engine.
+    """
+    accession = str(cohort.get("accession") or "").strip().upper() if isinstance(cohort, dict) else ""
+    discovery = str(getattr(config, "GEO_ACCESSION", "") or "").strip().upper()
+    reason = None
+    if isinstance(cohort, dict) and cohort.get("status") == "UNAVAILABLE":
+        return {**cohort, "accession": None, "n": 0, "label": "External validation unavailable"}
+    if not re.fullmatch(r"GSE[0-9]+", accession):
+        reason = "No valid independent external validation accession is available."
+    elif accession == discovery:
+        reason = f"Selected cohort {accession} is the discovery cohort; external validation requires an independent cohort."
+    if reason:
+        logger.warning(reason)
+        return {
+            "accession": None,
+            "n": 0,
+            "label": "External validation unavailable",
+            "status": "UNAVAILABLE",
+            "reason": reason,
+            "rejected_accession": accession or None,
+        }
+    return {**cohort, "accession": accession,
+            "label": cohort.get("label") or cohort.get("description") or f"{accession} External Validation Cohort"}
+
+
 def _resolve_platform(cohort: dict) -> dict:
     """
     Verify and correct the platform (GPL ID) reported for an AI-selected cohort.
@@ -321,6 +350,7 @@ def fetch_validation_cohort_from_llm(cancer_type: str, api_key: str) -> dict:
         f"NCBI GEO dataset for external validation of '{cancer_type}' biomarkers.\n"
         "Requirements: must have Tumor vs Normal samples, Affymetrix microarray preferred, "
         "at least 40 patients, different institution from the discovery cohort.\n"
+        f"The discovery accession is {config.GEO_ACCESSION}; do not select this accession or overlapping patients.\n"
         "Return a JSON object with keys:\n"
         "  'accession': GEO accession (e.g. 'GSE18842')\n"
         "  'platform': the GEO platform GPL ID (e.g. 'GPL570', 'GPL96', 'GPL10558')\n"
@@ -328,20 +358,23 @@ def fetch_validation_cohort_from_llm(cancer_type: str, api_key: str) -> dict:
         "  'label': short human-readable label e.g. 'GSE18842 (NSCLC, n=91)'"
     )
     result = _llm_query_cohort(prompt, api_key)
-    if result and "accession" in result:
+    if isinstance(result, dict) and "accession" in result:
+        result = validate_validation_cohort(result)
+        if result.get("status") == "UNAVAILABLE":
+            return result
         _resolve_platform(result)
         logger.info(f"  AI selected validation cohort: {result.get('label', result['accession'])} [{result.get('platform')}]")
         return result
 
-    # Fallback
+    # Fallback (never replace a rejected discovery accession with an invented cohort)
     ct_lower = cancer_type.lower()
     for key in _VALIDATION_FALLBACKS:
         if key in ct_lower:
-            fb = _VALIDATION_FALLBACKS[key]
-            logger.info(f"  Using fallback validation cohort: {fb['label']}")
+            fb = validate_validation_cohort(_VALIDATION_FALLBACKS[key])
+            logger.info(f"  Validation cohort selection: {fb['label']}")
             return fb
-    fb = _VALIDATION_FALLBACKS["default"]
-    logger.info(f"  Using default validation cohort: {fb['label']}")
+    fb = validate_validation_cohort(_VALIDATION_FALLBACKS["default"])
+    logger.info(f"  Validation cohort selection: {fb['label']}")
     return fb
 
 
@@ -363,7 +396,7 @@ def fetch_cohorts_for_cancer(cancer_type: str) -> dict:
         val_key  = next((k for k in _VALIDATION_FALLBACKS if k in ct_lower), "default")
         return {
             "survival":   dict(_SURVIVAL_FALLBACKS[surv_key]),
-            "validation": dict(_VALIDATION_FALLBACKS[val_key]),
+            "validation": validate_validation_cohort(_VALIDATION_FALLBACKS[val_key]),
         }
 
     logger.info(f"  Fetching cohorts for: {cancer_type}")

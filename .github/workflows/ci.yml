@@ -28,10 +28,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install pytest pytest-cov pytest-mock
 
       - name: Compile all Python files
         run: |
           python -m compileall -q config.py run_analysis.py run_dashboard.py src dashboard
+
+      - name: Run Unit Tests with Coverage
+        run: |
+          python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=40 -q
 
       - name: Run End-to-End Pipeline Smoke Test
         run: |

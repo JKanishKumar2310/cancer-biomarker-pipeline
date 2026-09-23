@@ -28,3 +28,12 @@ Thumbs.db
 .env
 *.env
 cloudflared.exe
+
+# Testing, Agent, and Course Artifacts
+.coverage
+.agents/
+.kilo/
+freellmapi/
+CAPSTONE_PROJECT_REPORT.*
+convert_to_docx.py
+
